@@ -1,0 +1,262 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [2 0 R 4 0 R ] /Count 2 >>
+endobj
+3 0 obj
+<< /Length 2445 >>
+stream
+BT
+/F1 10 Tf
+40 820 Td
+(# ATTENZIONE - Istruzioni di installazione) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Queste istruzioni servono per installare e usare l'applicazione su un altro computer Windows.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 1. Copia del progetto) Tj
+0 -12 Td
+(- Copia l'intera cartella del progetto in un percorso locale sul nuovo PC.) Tj
+0 -12 Td
+(- Mantieni la struttura delle cartelle, in particolare:) Tj
+0 -12 Td
+(  - `package.json`) Tj
+0 -12 Td
+(  - `mio server/`) Tj
+0 -12 Td
+(  - `src/`) Tj
+0 -12 Td
+(  - `public/`) Tj
+0 -12 Td
+(  - `node_modules/` \(verr‡ ricreata con `npm install`\)) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 2. Prerequisiti) Tj
+0 -12 Td
+(- Windows 10 o successivo) Tj
+0 -12 Td
+(- Node.js 18+ \(consigliato\)) Tj
+0 -12 Td
+(- Python 3.11.x) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 3. Installazione frontend) Tj
+0 -12 Td
+(Apri un terminale nella cartella principale del progetto:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(cd "C:\\Percorso\\Alla\\Cartella\\Analizzatore di mesh") Tj
+0 -12 Td
+(npm install) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 4. Installazione backend Python) Tj
+0 -12 Td
+(Apri un terminale nella cartella `mio server`:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(cd "C:\\Percorso\\Alla\\Cartella\\Analizzatore di mesh\\mio server") Tj
+0 -12 Td
+(python -m venv .venv) Tj
+0 -12 Td
+(.\\.venv\\Scripts\\Activate.ps1) Tj
+0 -12 Td
+(pip install --upgrade pip) Tj
+0 -12 Td
+(pip install -r requirements.txt) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(### Dipendenze Python principali) Tj
+0 -12 Td
+(- `fastapi`) Tj
+0 -12 Td
+(- `uvicorn`) Tj
+0 -12 Td
+(- `meshlib`) Tj
+0 -12 Td
+(- `python-multipart`) Tj
+0 -12 Td
+(- `numpy`) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 5. Avvio del server backend) Tj
+0 -12 Td
+(Il server Python deve essere avviato manualmente prima di usare l'interfaccia React.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Esegui uno dei seguenti comandi:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(cd "C:\\Percorso\\Alla\\Cartella\\Analizzatore di mesh\\mio server") Tj
+0 -12 Td
+(.\\.venv\\Scripts\\Activate.ps1) Tj
+0 -12 Td
+(python server.py) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Oppure usa il file di avvio rapido:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(..\\mio server\\run_server.bat) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Il server sar‡ disponibile su `http://127.0.0.1:8000`.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 6. Avvio dell'app frontend) Tj
+0 -12 Td
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 1866 >>
+stream
+BT
+/F1 10 Tf
+40 820 Td
+(Apri un terminale nella cartella principale del progetto e avvia:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(cd "C:\\Percorso\\Alla\\Cartella\\Analizzatore di mesh") Tj
+0 -12 Td
+(npm run local) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Apri quindi `http://localhost:5173` nel browser.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 7. Uso rapido in sviluppo) Tj
+0 -12 Td
+(- Avvia il backend: `mio server\\run_server.bat`) Tj
+0 -12 Td
+(- Avvia il frontend: `npm run local`) Tj
+0 -12 Td
+(- Carica mesh e utilizza i comandi dell'interfaccia) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 8. Build di produzione e app Windows) Tj
+0 -12 Td
+(Per creare la build frontend:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(npm run build) Tj
+0 -12 Td
+(npm run preview) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Per creare l'eseguibile Windows \(Electron\):) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(```powershell) Tj
+0 -12 Td
+(npm run electron-build) Tj
+0 -12 Td
+(```) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 9. Endpoint backend principali) Tj
+0 -12 Td
+(- `GET /health`) Tj
+0 -12 Td
+(- `POST /upload-mesh`) Tj
+0 -12 Td
+(- `POST /simplify`) Tj
+0 -12 Td
+(- `POST /align-points`) Tj
+0 -12 Td
+(- `POST /align-icp`) Tj
+0 -12 Td
+(- `POST /align-ransac`) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(## 10. Note importanti) Tj
+0 -12 Td
+(- Il backend utilizza `MeshLib` per il processamento mesh.) Tj
+0 -12 Td
+(- Nel codice del server non sono presenti riferimenti attivi a Open3D.) Tj
+0 -12 Td
+(- Se nella cartella `.venv` sono presenti file Open3D, si tratta di pacchetti installati nell'ambiente locale e non di codice utilizzato dal progetto.) Tj
+0 -12 Td
+(- Il frontend e il backend non si avviano automaticamente insieme: Ë necessario avviare prima il server Python e poi il client React.) Tj
+0 -12 Td
+(- Usa `mio server\\run_server.bat` per un avvio semplificato del backend.) Tj
+0 -12 Td
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 3 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 5 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000128 00000 n 
+0000002625 00000 n 
+0000004543 00000 n 
+0000004669 00000 n 
+0000004795 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4865
+%%EOF

@@ -1,0 +1,104 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1461 >>
+stream
+BT
+/F1 12 Tf
+50 790 Td
+(Istruzioni per avviare il progetto) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Queste istruzioni spiegano come avviare l'applicazione copiata su un altro computer.) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Prerequisiti) Tj
+0 -16 Td
+(- Installare Node.js \(versione consigliata >= 18\). Verifica con node -v e npm -v.) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Passaggi per eseguire il progetto) Tj
+0 -16 Td
+(1. Apri un terminale nella cartella del progetto \(dove si trova package.json\).) Tj
+0 -16 Td
+(2. Installa le dipendenze:) Tj
+0 -16 Td
+(   npm install) Tj
+0 -16 Td
+(3. Avvia in modalit‡ sviluppo:) Tj
+0 -16 Td
+(   npm run local) Tj
+0 -16 Td
+(   oppure) Tj
+0 -16 Td
+(   npm run dev) Tj
+0 -16 Td
+(4. In alternativa, per avviare l'app Electron in dev:) Tj
+0 -16 Td
+(   npm run electron-dev) Tj
+0 -16 Td
+(5. Per buildare e provare il server statico locale:) Tj
+0 -16 Td
+(   npm run build) Tj
+0 -16 Td
+(   npm run preview) Tj
+0 -16 Td
+(   oppure) Tj
+0 -16 Td
+(   npm run deploy:local) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Uso del file batch) Tj
+0 -16 Td
+(- Puoi avviare l'app con il file AvviaApp.bat presente nella cartella del progetto.) Tj
+0 -16 Td
+(  Doppio clic o esegui:) Tj
+0 -16 Td
+(  .\\AvviaApp.bat) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Creare un eseguibile Windows) Tj
+0 -16 Td
+(- Esempio: npm run electron-build) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Convertire queste istruzioni in PDF) Tj
+0 -16 Td
+(- Apri INSTRUCTIONS.html nel browser e stampa/salva come PDF.) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000001760 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1830
+%%EOF
