@@ -42,7 +42,10 @@ Applicazione desktop e web per caricare, visualizzare, modificare e allineare me
 
 1. Installa **Node.js LTS** (https://nodejs.org) e **Python 3.11** (https://www.python.org, spunta "Add Python to PATH")
 2. Fai doppio clic su **`InstallaTutto.bat`**: installa le librerie dell'app (`npm install`) e crea l'ambiente Python del server in `mio server\.venv` con le versioni di `mio server/requirements.txt`
-3. Avvia l'app con `AvviaApp.bat` e il server con `mio serverun_server.bat`
+3. Avvia l'app con `AvviaApp.bat` e il server con `mio server\run_server.bat`
+4. App desktop: `npm run electron-dev` da un Prompt dei comandi (non dal terminale di VS Code, che imposta `ELECTRON_RUN_AS_NODE`)
+
+Se Electron non si avvia dopo `npm install` (con Node 24 l'estrazione può interrompersi), esegui `RiparaElectron.ps1`: `InstallaTutto.bat` lo fa già in automatico.
 
 
 ### Prerequisiti
