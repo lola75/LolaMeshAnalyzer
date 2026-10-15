@@ -38,6 +38,13 @@ Applicazione desktop e web per caricare, visualizzare, modificare e allineare me
 
 ## 🚀 Avvio Rapido
 
+### Installazione automatica su un nuovo PC (Windows)
+
+1. Installa **Node.js LTS** (https://nodejs.org) e **Python 3.11** (https://www.python.org, spunta "Add Python to PATH")
+2. Fai doppio clic su **`InstallaTutto.bat`**: installa le librerie dell'app (`npm install`) e crea l'ambiente Python del server in `mio server\.venv` con le versioni di `mio server/requirements.txt`
+3. Avvia l'app con `AvviaApp.bat` e il server con `mio serverun_server.bat`
+
+
 ### Prerequisiti
 - Node.js 16+ e npm
 
