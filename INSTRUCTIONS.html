@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Istruzioni - Analizzatore di Mesh</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    html, body { height: 100%; width: 100% }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 40px;
+      color: #111;
+      background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 60%, #dbeafe 100%);
+      background-attachment: fixed;
+    }
+    /* Decorative bottom overlay to match app style */
+    body::after {
+      content: "";
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 40vh;
+      pointer-events: none;
+      z-index: -1;
+      background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(239,246,255,0.9) 30%, rgba(191,219,254,1) 100%);
+    }
+    h1 { font-size: 24px }
+    pre { background:#f4f4f4; padding:10px }
+    .section { margin-bottom: 20px }
+  </style>
+</head>
+<body>
+  <h1>Istruzioni per avviare il progetto</h1>
+  <p>Queste istruzioni spiegano come avviare l'applicazione copiata su un altro computer.</p>
+
+  <div class="section">
+    <h2>Prerequisiti</h2>
+    <ul>
+      <li>Installare Node.js (versione consigliata &gt;= 18). Verifica con `node -v` e `npm -v`.</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Passaggi per eseguire il progetto</h2>
+    <ol>
+      <li>Apri un terminale nella cartella del progetto (dove si trova <code>package.json</code>).</li>
+      <li>Installa le dipendenze:
+        <pre>npm install</pre>
+      </li>
+      <li>Avvia in modalità sviluppo (apre Vite):
+        <pre>npm run local
+# oppure
+npm run dev</pre>
+      </li>
+      <li>Per avviare l'app Electron in dev:
+        <pre>npm run electron-dev</pre>
+      </li>
+      <li>Per buildare e provare il server statico locale:
+        <pre>npm run build
+npm run preview
+# o
+npm run deploy:local</pre>
+      </li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>Uso del file batch</h2>
+    <p>Puoi avviare l'app con il file <code>AvviaApp.bat</code> presente nella cartella del progetto. Doppio clic o esegui:</p>
+    <pre>.\AvviaApp.bat</pre>
+  </div>
+
+  <div class="section">
+    <h2>Creare un eseguibile Windows</h2>
+    <p>Richiede le dipendenze di sviluppo e un ambiente di build adeguato. Esempio:</p>
+    <pre>npm run electron-build</pre>
+  </div>
+
+  <div class="section">
+    <h2>Convertire queste istruzioni in PDF</h2>
+    <p>Opzione rapida (consigliata):</p>
+    <ol>
+      <li>Apri <code>INSTRUCTIONS.html</code> nel browser.</li>
+      <li>Premi <strong>Ctrl+P</strong> (Stampa) e scegli "Salva come PDF".</li>
+    </ol>
+
+    <p>Opzione con strumenti (facoltativa):</p>
+    <pre>wkhtmltopdf INSTRUCTIONS.html INSTRUCTIONS.pdf
+# oppure
+pandoc INSTRUCTIONS.md -o INSTRUCTIONS.pdf</pre>
+  </div>
+
+  <hr>
+  <p>Se vuoi, posso generare direttamente il PDF qui e aggiungerlo alla cartella del progetto. Vuoi che lo faccia ora?</p>
+</body>
+</html>

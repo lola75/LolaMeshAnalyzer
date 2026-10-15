@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guida Installazione - Analizzatore di Mesh 3D</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 60%, #dbeafe 100%);
+            background-attachment: fixed;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 20px;
+        }
+        
+        h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        h2 {
+            color: #667eea;
+            font-size: 1.8em;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-left: 4px solid #667eea;
+            padding-left: 15px;
+        }
+        
+        h3 {
+            color: #764ba2;
+            font-size: 1.3em;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+        
+        p {
+            margin-bottom: 15px;
+            text-align: justify;
+        }
+        
+        ul, ol {
+            margin-left: 30px;
+            margin-bottom: 15px;
+        }
+        
+        li {
+            margin-bottom: 10px;
+        }
+        
+        .section {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 5px solid #667eea;
+        }
+        
+        .highlight {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #ffc107;
+            margin: 20px 0;
+        }
+        
+        .success {
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #28a745;
+            margin: 20px 0;
+        }
+        
+        .error {
+            background: #f8d7da;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #dc3545;
+            margin: 20px 0;
+        }
+        
+        code {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+        
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            border-left: 4px solid #667eea;
+            line-height: 1.4;
+        }
+        
+        .step-box {
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .step-number {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            font-size: 1.2em;
+            margin-right: 10px;
+        }
+        
+        .command {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            border-left: 3px solid #28a745;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: bold;
+        }
+        
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        tr:nth-child(even) {
+            background: #f8f9ff;
+        }
+        
+        tr:hover {
+            background: #e8eaff;
+        }
+        
+        .requirements {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .requirement-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .requirement-card strong {
+            display: block;
+            font-size: 1.3em;
+            margin-bottom: 5px;
+        }
+        
+        .checklist {
+            list-style: none;
+            margin-left: 0;
+        }
+        
+        .checklist li {
+            padding: 10px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        
+        .checklist li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        
+        .menu-item {
+            background: #f0f0f0;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            display: inline-block;
+            margin: 0 5px;
+        }
+        
+        .option-card {
+            background: #f8f9ff;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 2px solid #ddd;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .logo {
+            font-size: 3em;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        
+        @media print {
+            body {
+                background: white;
+            }
+            .container {
+                box-shadow: none;
+                padding: 20px;
+            }
+            h1 {
+                page-break-after: avoid;
+            }
+            h2 {
+                page-break-after: avoid;
+            }
+            .step-box {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">🔧</div>
+            <h1>Analizzatore di Mesh 3D</h1>
+            <p class="subtitle">Guida Completa di Installazione e Avvio su Windows</p>
+            <p style="margin-top: 10px; color: #999; font-size: 0.9em;">Aggiornata a ottobre 2026</p>
+        </header>
+        
+        <!-- REQUISITI DI SISTEMA -->
+        <h2>📋 Requisiti di Sistema</h2>
+        <p>Prima di iniziare, assicurati di avere un PC con le seguenti caratteristiche:</p>
+        
+        <div class="requirements">
+            <div class="requirement-card">
+                <strong>Sistema Operativo</strong>
+                <p>Windows 10 o successivo</p>
+            </div>
+            <div class="requirement-card">
+                <strong>Memoria RAM</strong>
+                <p>Minimo 4 GB (consigliato 8 GB)</p>
+            </div>
+            <div class="requirement-card">
+                <strong>Spazio su Disco</strong>
+                <p>Almeno 1 GB libero</p>
+            </div>
+            <div class="requirement-card">
+                <strong>Connessione Internet</strong>
+                <p>Necessaria per il download iniziale</p>
+            </div>
+        </div>
+        
+        <!-- SOFTWARE DA INSTALLARE -->
+        <h2>📥 Software da Installare</h2>
+        <p>Per usare tutte le funzioni del progetto servono Node.js/npm per l'interfaccia e Python per il server mesh locale.</p>
+        
+        <div class="option-card">
+            <h3>✅ Node.js (OBBLIGATORIO)</h3>
+            <p><strong>Versione consigliata:</strong> LTS supportata, 20 o superiore</p>
+            <p><strong>Perché:</strong> Node.js include npm, il gestore di pacchetti di cui l'app ha bisogno.</p>
+            <p><strong>Download:</strong> <a href="https://nodejs.org/en/download/" target="_blank" rel="noopener">nodejs.org/en/download</a> - scarica la versione LTS.</p>
+            <p><strong>Nota:</strong> npm viene installato automaticamente con Node.js</p>
+        </div>
+
+        <div class="option-card">
+            <h3>✅ Python (OBBLIGATORIO per server MeshLib)</h3>
+            <p><strong>Versione consigliata:</strong> Python 3.11 a 64 bit</p>
+            <p><strong>Download:</strong> <a href="https://www.python.org/downloads/windows/" target="_blank" rel="noopener">python.org/downloads/windows</a></p>
+            <p>Durante l'installazione seleziona <strong>Add Python to PATH</strong> e includi Python Launcher (<code>py</code>).</p>
+        </div>
+
+        <h3>Dipendenze installate dal progetto</h3>
+        <p>Non installare questi pacchetti uno per uno: i comandi della guida installano le versioni dichiarate nei manifesti del progetto.</p>
+        <table>
+            <thead><tr><th>Pacchetto</th><th>Uso</th><th>Link</th></tr></thead>
+            <tbody>
+                <tr><td>React, React DOM</td><td>Interfaccia utente</td><td><a href="https://www.npmjs.com/package/react" target="_blank" rel="noopener">React</a>, <a href="https://www.npmjs.com/package/react-dom" target="_blank" rel="noopener">React DOM</a></td></tr>
+                <tr><td>Three.js</td><td>Rendering 3D</td><td><a href="https://www.npmjs.com/package/three" target="_blank" rel="noopener">npm</a></td></tr>
+                <tr><td>Vite, plugin React</td><td>Server di sviluppo e build</td><td><a href="https://www.npmjs.com/package/vite" target="_blank" rel="noopener">Vite</a>, <a href="https://www.npmjs.com/package/@vitejs/plugin-react" target="_blank" rel="noopener">plugin React</a></td></tr>
+                <tr><td>Tailwind CSS, Autoprefixer, PostCSS</td><td>Stili CSS</td><td><a href="https://www.npmjs.com/package/tailwindcss" target="_blank" rel="noopener">Tailwind</a>, <a href="https://www.npmjs.com/package/autoprefixer" target="_blank" rel="noopener">Autoprefixer</a>, <a href="https://www.npmjs.com/package/postcss" target="_blank" rel="noopener">PostCSS</a></td></tr>
+                <tr><td>Express, Socket.IO e client</td><td>Server Node e comunicazione</td><td><a href="https://www.npmjs.com/package/express" target="_blank" rel="noopener">Express</a>, <a href="https://www.npmjs.com/package/socket.io" target="_blank" rel="noopener">Socket.IO</a>, <a href="https://www.npmjs.com/package/socket.io-client" target="_blank" rel="noopener">client</a></td></tr>
+                <tr><td>Electron, electron-builder, electron-is-dev</td><td>App desktop e pacchettizzazione</td><td><a href="https://www.npmjs.com/package/electron" target="_blank" rel="noopener">Electron</a>, <a href="https://www.npmjs.com/package/electron-builder" target="_blank" rel="noopener">builder</a>, <a href="https://www.npmjs.com/package/electron-is-dev" target="_blank" rel="noopener">electron-is-dev</a></td></tr>
+                <tr><td>concurrently, wait-on, @types/node</td><td>Strumenti di sviluppo e build</td><td><a href="https://www.npmjs.com/package/concurrently" target="_blank" rel="noopener">concurrently</a>, <a href="https://www.npmjs.com/package/wait-on" target="_blank" rel="noopener">wait-on</a>, <a href="https://www.npmjs.com/package/@types/node" target="_blank" rel="noopener">@types/node</a></td></tr>
+                <tr><td>FastAPI, Uvicorn, python-multipart</td><td>API locale, server e upload</td><td><a href="https://pypi.org/project/fastapi/" target="_blank" rel="noopener">FastAPI</a>, <a href="https://pypi.org/project/uvicorn/" target="_blank" rel="noopener">Uvicorn</a>, <a href="https://pypi.org/project/python-multipart/" target="_blank" rel="noopener">python-multipart</a></td></tr>
+                <tr><td>MeshLib 3.0.4.121</td><td>Lettura e lavorazione mesh</td><td><a href="../mio%20server/meshlib-3.0.4.121-py38.py39.py310.py311.py312.py313-none-win_amd64.whl">Wheel Windows x64 incluso</a>, <a href="https://pypi.org/project/meshlib/" target="_blank" rel="noopener">PyPI</a>, <a href="https://meshlib.io/" target="_blank" rel="noopener">sito e documentazione</a>.</td></tr>
+                <tr><td>NumPy, Open3D</td><td>Calcolo numerico e funzioni 3D/ICP</td><td><a href="https://pypi.org/project/numpy/" target="_blank" rel="noopener">NumPy</a>, <a href="https://pypi.org/project/open3d/" target="_blank" rel="noopener">Open3D</a></td></tr>
+                <tr><td>SimpleITK (ITK)</td><td>Registrazione rigida</td><td><a href="https://pypi.org/project/SimpleITK/" target="_blank" rel="noopener">PyPI</a>, <a href="https://simpleitk.org/" target="_blank" rel="noopener">documentazione</a>. Il codice usa `SimpleITK`, non il pacchetto `itk`.</td></tr>
+            </tbody>
+        </table>
+        
+        <!-- PASSAGGI DI INSTALLAZIONE -->
+        <h2>🚀 Guida di Installazione Passo per Passo</h2>
+        
+        <div class="step-box">
+            <span class="step-number">1</span>
+            <h3>Scarica e Installa Node.js</h3>
+            <ol>
+                <li>Apri il browser e vai su <strong>https://nodejs.org</strong></li>
+                <li>Seleziona la versione <strong>LTS (Long Term Support)</strong></li>
+                <li>Clicca su "Download for Windows"</li>
+                <li>Quando il file è scaricato, fai doppio clic per aprire l'installer</li>
+                <li>Clicca <span class="menu-item">Next</span> per accettare i termini di utilizzo</li>
+                <li>Clicca <span class="menu-item">Next</span> per selezionare la cartella di installazione (mantieni il default)</li>
+                <li>Assicurati che <strong>"npm package manager"</strong> sia selezionato</li>
+                <li>Clicca <span class="menu-item">Install</span> e attendi il completamento</li>
+                <li>Clicca <span class="menu-item">Finish</span></li>
+            </ol>
+            <p style="margin-top: 15px;"><strong>⚠️ Importante:</strong> Riavvia il PC dopo l'installazione per completare la configurazione.</p>
+        </div>
+        
+        <div class="step-box">
+            <span class="step-number">2</span>
+            <h3>Verifica l'Installazione</h3>
+            <p>Apri <strong>PowerShell</strong> (o il Terminale) e digita i seguenti comandi:</p>
+            
+            <div class="command">node --version</div>
+            <div class="command">npm --version</div>
+            
+            <p>Dovresti vedere un numero di versione (es: <code>v18.15.0</code>). Se vedi un errore, riavvia il PC e riprova.</p>
+        </div>
+        
+        <div class="step-box">
+            <span class="step-number">3</span>
+            <h3>Scarica/Copia il Progetto</h3>
+            <p>Assicurati di avere la cartella del progetto nel tuo PC. Nei comandi seguenti sostituisci il percorso di esempio con quello effettivo:</p>
+            
+            <div class="command">C:\percorso\Analizzatore di mesh</div>
+            
+            <p>Se non ce l'hai ancora, puoi:</p>
+            <ul>
+                <li><strong>Clonare da Git:</strong> Se il progetto è su GitHub</li>
+                <li><strong>Copiare il file ZIP:</strong> Se l'hai ricevuto come archivio</li>
+                <li><strong>Copiare la cartella:</strong> Se ce l'hai su un'altra unità</li>
+            </ul>
+        </div>
+        
+        <div class="step-box">
+            <span class="step-number">4</span>
+            <h3>Installa le Dipendenze</h3>
+            <p>Apri <strong>PowerShell</strong> e naviga nella cartella del progetto:</p>
+            
+            <div class="command">cd "C:\percorso\Analizzatore di mesh"</div>
+            
+            <p>Ora installa tutte le dipendenze necessarie:</p>
+            
+            <div class="command">npm ci</div>
+            
+            <p><strong>⏳ Questo potrebbe richiedere 2-5 minuti</strong>. Non interrompere il processo!</p>
+            <p style="margin-top: 15px;" class="highlight"><strong>Nota:</strong> Vedrai molte linee di output nel terminale. Questo è normale. Se vedi errori rossi alla fine, potrebbero essere solo avvisi, non errori critici.</p>
+        </div>
+        
+        <div class="step-box">
+            <span class="step-number">5</span>
+            <h3>Installa il server Python, MeshLib e ITK</h3>
+            <p>Da PowerShell aperto nella cartella principale del progetto, crea l'ambiente Python e installa i pacchetti:</p>
+            <pre>py -3.11 -m venv ".\mio server\.venv"
+&amp; ".\mio server\.venv\Scripts\python.exe" -m pip install --upgrade pip
+Push-Location ".\mio server"
+&amp; ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt
+Pop-Location</pre>
+            <p><strong>MeshLib</strong> viene installata dal file wheel Windows x64 incluso in <code>mio server</code>. Per l'uso ITK il backend installa <strong>SimpleITK</strong>. Il file <code>requirements.txt</code> raccoglie anche FastAPI, Uvicorn, python-multipart, NumPy e Open3D.</p>
+            <p>Se <code>py -3.11</code> non è disponibile, installa Python 3.11 a 64 bit dal link ufficiale riportato sopra e riapri PowerShell.</p>
+        </div>
+
+        <div class="step-box">
+            <span class="step-number">6</span>
+            <h3>Avvia l'Applicazione</h3>
+            <p>Avvia il backend in una finestra PowerShell:</p>
+            <div class="command">.\mio server\run_server.bat</div>
+            <p>Apri una seconda finestra PowerShell nella cartella del progetto e avvia il frontend:</p>
+            <div class="command">npm run dev</div>
+            <p><strong>Cosa succede ora:</strong></p>
+            <ul>
+                <li>Il backend mesh risponde su <code>http://127.0.0.1:8000</code> (controllo: <code>/health</code>)</li>
+                <li>Vite mostrerà un URL simile a: <code>Local: http://localhost:5173</code></li>
+                <li>Apri il browser (Chrome, Edge, Firefox, ecc.)</li>
+                <li>Vai su <strong>http://localhost:5173</strong></li>
+                <li>L'applicazione dovrebbe aprirsi! 🎉</li>
+            </ul>
+        </div>
+        
+        <!-- OPZIONI DI AVVIO -->
+        <h2>⚡ Opzioni di Avvio Rapido</h2>
+        
+        <p>Una volta installato, hai questi modi per avviare l'app:</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Comando</th>
+                    <th>Descrizione</th>
+                    <th>URL</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>npm run dev</code></td>
+                    <td>Modalità sviluppo con reload automatico</td>
+                    <td>http://localhost:5173</td>
+                </tr>
+                <tr>
+                    <td><code>npm run local</code></td>
+                    <td>Alternativa a npm run dev</td>
+                    <td>http://localhost:5173</td>
+                </tr>
+                <tr>
+                    <td><code>npm run build && npm run preview</code></td>
+                    <td>Build di produzione + preview locale</td>
+                    <td>http://localhost:4173</td>
+                </tr>
+                <tr>
+                    <td><code>npm run electron-dev</code></td>
+                    <td>App desktop Electron</td>
+                    <td>Applicazione nativa</td>
+                </tr>
+                <tr>
+                    <td><code>npm run start</code></td>
+                    <td>Build + Server di produzione</td>
+                    <td>http://localhost:3000</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <!-- METODI ALTERNATIVI -->
+        <h2>🎯 Metodi di Avvio Alternativi</h2>
+        
+        <h3>Tramite File Batch (Scelta Rapida)</h3>
+        <p>Se nella cartella del progetto esiste il file <code>AvviaApp.bat</code>, puoi usarlo per avviare l'app con un doppio clic. Questo è il modo più semplice per gli utenti non tecnici.</p>
+        
+        <div class="step-box">
+            <ol>
+                <li>Vai nella cartella del progetto</li>
+                <li>Fai doppio clic su <strong>AvviaApp.bat</strong></li>
+                <li>Si aprirà una finestra del Terminale e quindi il browser</li>
+            </ol>
+        </div>
+        
+        <h3>Creare un Collegamento Rapido</h3>
+        <p>Per rendere ancora più semplice l'avvio:</p>
+        <div class="step-box">
+            <ol>
+                <li>Clicca con il tasto destro su <code>AvviaApp.bat</code></li>
+                <li>Seleziona <span class="menu-item">Invia a</span> → <span class="menu-item">Desktop (crea collegamento)</span></li>
+                <li>Ora hai un'icona sul desktop per avviare l'app!</li>
+            </ol>
+        </div>
+        
+        <!-- TROUBLESHOOTING -->
+        <h2>❌ Risoluzione dei Problemi</h2>
+        
+        <h3>Problema: "npm: il termine non è riconosciuto"</h3>
+        <div class="error">
+            <p><strong>Soluzione:</strong></p>
+            <ul>
+                <li>Assicurati di aver installato Node.js</li>
+                <li>Riavvia il PC completamente</li>
+                <li>Riapri PowerShell</li>
+                <li>Digita di nuovo: <code>npm --version</code></li>
+            </ul>
+        </div>
+        
+        <h3>Problema: Port 5173 già in uso</h3>
+        <div class="error">
+            <p><strong>Soluzione:</strong></p>
+            <ul>
+                <li>Un'altra istanza dell'app è già in esecuzione</li>
+                <li>Chiudi il terminale precedente</li>
+                <li>Aspetta qualche secondo</li>
+                <li>Prova di nuovo con <code>npm run dev</code></li>
+            </ul>
+        </div>
+        
+        <h3>Problema: Errore durante "npm install"</h3>
+        <div class="error">
+            <p><strong>Soluzione:</strong></p>
+            <ul>
+                <li>Controlla la connessione a internet</li>
+                <li>Non cancellare <code>package-lock.json</code>; dalla cartella del progetto ripeti <code>npm ci</code></li>
+            </ul>
+        </div>
+        
+        <h3>Problema: L'app non si apre nel browser</h3>
+        <div class="error">
+            <p><strong>Soluzione:</strong></p>
+            <ul>
+                <li>Il terminale dovrebbe mostrarti un URL (es: http://localhost:5173)</li>
+                <li>Copia l'URL e incollalo manualmente nel browser</li>
+                <li>Se ancora non funziona, il server potrebbe non essere avviato correttamente</li>
+                <li>Controlla che nel terminale non ci siano errori rossi</li>
+            </ul>
+        </div>
+        
+        <!-- PASSAGGI COMUNI -->
+        <h2>📝 Checklist di Verifica</h2>
+        <ul class="checklist">
+            <li>Node.js è installato (verifica con <code>node --version</code>)</li>
+            <li>npm è disponibile (verifica con <code>npm --version</code>)</li>
+            <li>La cartella del progetto esiste e contiene <code>package.json</code></li>
+            <li>Hai eseguito <code>npm ci</code> senza errori critici</li>
+            <li>Hai creato <code>mio server\.venv</code> e installato <code>requirements.txt</code></li>
+            <li>Il backend risponde a <code>http://127.0.0.1:8000/health</code></li>
+            <li>Il comando <code>npm run dev</code> avvia il server senza errori</li>
+            <li>Il browser si apre all'indirizzo <code>http://localhost:5173</code></li>
+            <li>L'interfaccia grafica dell'app carica correttamente</li>
+        </ul>
+        
+        <!-- SUPPORT -->
+        <h2>💬 Supporto e Contatti</h2>
+        <p>Se hai problemi durante l'installazione:</p>
+        <ul>
+            <li><strong>Controlla i log del terminale:</strong> Spesso gli errori forniscono indizi utili</li>
+            <li><strong>Leggi il README.md:</strong> Potrebbe contenere informazioni aggiuntive</li>
+            <li><strong>Verifica la connessione internet:</strong> Necessaria per scaricare le dipendenze</li>
+            <li><strong>Riavvia il PC:</strong> Molti problemi si risolvono con un riavvio completo</li>
+        </ul>
+        
+        <!-- PROSSIMI PASSI -->
+        <h2>🎓 Prossimi Passi</h2>
+        <p>Dopo aver avviato l'app con successo:</p>
+        
+        <ul>
+            <li><strong>Carica un file 3D:</strong> Prova con file in formato STL, OBJ o PLY</li>
+            <li><strong>Esplora l'interfaccia:</strong> Scopri tutte le funzionalità disponibili</li>
+            <li><strong>Leggi la documentazione:</strong> Consulta il README.md per ulteriori dettagli</li>
+            <li><strong>Build per la produzione:</strong> Quando sei pronto, crea una build finale con <code>npm run build</code></li>
+        </ul>
+        
+        <div class="success">
+            <strong>🎉 Complimenti!</strong><br>
+            Se sei arrivato fin qui, probabilmente l'app è già in esecuzione nel tuo browser!
+        </div>
+        
+        <footer>
+            <p>Guida di Installazione - Analizzatore di Mesh 3D</p>
+            <p>Aggiornata a ottobre 2026</p>
+            <p>Per domande o problemi, consulta la documentazione del progetto</p>
+        </footer>
+    </div>
+</body>
+</html>

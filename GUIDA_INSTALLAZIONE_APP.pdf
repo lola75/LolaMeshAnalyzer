@@ -1,0 +1,514 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 3009 >>
+stream
+BT
+/F1 14 Bf
+50 750 Td
+(GUIDA DI INSTALLAZIONE) Tj
+0 -20 Td
+/F1 12 Tf
+(Analizzatore di Mesh 3D) Tj
+0 -30 Td
+/F1 10 Tf
+(================================================================================) Tj
+0 -12 Td
+(  GUIDA DI INSTALLAZIONE DELL'APP ELECTRON) Tj
+0 -12 Td
+(  Analizzatore di Mesh 3D - Versione 1.0.0) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Data: 20/06/2026) Tj
+0 -12 Td
+(Versione documento: 1.0) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(SOMMARIO) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(1. Introduzione) Tj
+0 -12 Td
+(2. Requisiti di sistema) Tj
+0 -12 Td
+(3. METODO 1: Installazione da Eseguibile \(Consigliato\)) Tj
+0 -12 Td
+(4. METODO 2: Installazione Completa) Tj
+0 -12 Td
+(5. Avvio dell'applicazione) Tj
+0 -12 Td
+(6. Troubleshooting) Tj
+0 -12 Td
+(7. Supporto tecnico) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(1. INTRODUZIONE) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Questo documento spiega come installare l'applicazione "Analizzatore di Mesh 3D") Tj
+0 -12 Td
+(su un PC Windows. L'app Ë disponibile in due versioni:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(a\) ESEGUIBILE STANDALONE \(.exe\) - Installazione semplice e veloce) Tj
+0 -12 Td
+(   - Nessuna configurazione aggiuntiva richiesta) Tj
+0 -12 Td
+(   - Dimensione: circa 150 MB) Tj
+0 -12 Td
+(   - Tempo installazione: 2-3 minuti) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(b\) VERSIONE COMPLETA - Per sviluppatori o chi vuole il codice sorgente) Tj
+0 -12 Td
+(   - Richiede Node.js) Tj
+0 -12 Td
+(   - Dimensione completa: circa 500 MB) Tj
+0 -12 Td
+(   - Tempo installazione: 10-15 minuti) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(2. REQUISITI DI SISTEMA) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(MINIMO:) Tj
+0 -12 Td
+(  - Windows 10 o successivo \(64-bit\)) Tj
+0 -12 Td
+(  - Processore: Intel/AMD x64) Tj
+0 -12 Td
+(  - RAM: 4 GB) Tj
+0 -12 Td
+(  - Spazio disco: 300 MB) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(CONSIGLIATO:) Tj
+0 -12 Td
+(  - Windows 10/11 \(64-bit\)) Tj
+0 -12 Td
+(  - Processore: Intel i5/i7 o equivalente) Tj
+0 -12 Td
+(  - RAM: 8 GB o superiore) Tj
+0 -12 Td
+(  - Spazio disco: 1 GB) Tj
+0 -12 Td
+(  - Connessione internet per primi aggiornamenti) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(OPTIONAL \(Solo per METODO 2\):) Tj
+0 -12 Td
+(  - Node.js 18.x o superiore) Tj
+0 -12 Td
+(  - npm 9.x o superiore) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(3. METODO 1: INSTALLAZIONE DA ESEGUIBILE \(CONSIGLIATO\)) Tj
+0 -12 Td
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 7 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+7 0 obj
+<< /Length 8067 >>
+stream
+BT
+/F1 10 Tf
+50 750 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Questo Ë il metodo pi˘ semplice e veloce.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 1: Scarica l'eseguibile) Tj
+0 -12 Td
+(  - Ricevi il file "Mesh-Analyzer-1.0.0.exe" via email o chiavetta USB) Tj
+0 -12 Td
+(  - Salva il file in una cartella a tua scelta \(es: C:\\Programmi\\\)) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 2: Avvia l'installer) Tj
+0 -12 Td
+(  - Doppio click su "Mesh-Analyzer-1.0.0.exe") Tj
+0 -12 Td
+(  - Se vedi un avviso di Windows Defender:) Tj
+0 -12 Td
+(    - Clicca "Ulteriori informazioni") Tj
+0 -12 Td
+(    - Clicca "Esegui comunque") Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 3: Segui la procedura di installazione) Tj
+0 -12 Td
+(  - Leggi e accetta i termini di licenza) Tj
+0 -12 Td
+(  - Scegli la cartella di destinazione \(consigliato: C:\\Program Files\\\)) Tj
+0 -12 Td
+(  - Clicca "Installa") Tj
+0 -12 Td
+(  - Attendi il completamento) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 4: Crea il collegamento sul desktop \(opzionale\)) Tj
+0 -12 Td
+(  - L'installer offrir‡ di creare un collegamento) Tj
+0 -12 Td
+(  - Spunta la casella per creare un'icona sul desktop) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 5: Avvia l'applicazione) Tj
+0 -12 Td
+(  - Doppio click sull'icona dell'app o dal menu Start) Tj
+0 -12 Td
+(  - L'applicazione dovrebbe aprirsi entro 5-10 secondi) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(FINE! L'app Ë ora installata e pronta all'uso.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(4. METODO 2: INSTALLAZIONE COMPLETA) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Questo metodo Ë per chi ha il codice sorgente e vuole eseguire) Tj
+0 -12 Td
+(direttamente l'app in modalit‡ sviluppo.) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PREREQUISITO: Installa Node.js) Tj
+0 -12 Td
+(  1. Vai a: https://nodejs.org/) Tj
+0 -12 Td
+(  2. Scarica la versione LTS \(18.x o superiore\)) Tj
+0 -12 Td
+(  3. Esegui l'installer e completa l'installazione) Tj
+0 -12 Td
+(  4. Riavvia il computer) Tj
+0 -12 Td
+(  5. Verifica l'installazione:) Tj
+0 -12 Td
+(     - Apri PowerShell) Tj
+0 -12 Td
+(     - Digita: node --version) Tj
+0 -12 Td
+(     - Digita: npm --version) Tj
+0 -12 Td
+(     - Dovrebbero mostrare i numeri di versione) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 1: Prepara la cartella del progetto) Tj
+0 -12 Td
+(  - Copia la cartella del progetto in una posizione comoda) Tj
+0 -12 Td
+(    \(es: C:\\Users\\tuonome\\Sviluppo\\Analizzatore-mesh\)) Tj
+0 -12 Td
+(  - Assicurati che il percorso non contenga spazi o caratteri speciali) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 2: Installa le dipendenze) Tj
+0 -12 Td
+(  - Apri PowerShell) Tj
+0 -12 Td
+(  - Naviga nella cartella del progetto:) Tj
+0 -12 Td
+(    cd "C:\\Users\\tuonome\\Sviluppo\\Analizzatore-mesh") Tj
+0 -12 Td
+(  - Digita: npm install) Tj
+0 -12 Td
+(  - Attendi il completamento \(puÚ durare 5-10 minuti\)) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 3: Avvia l'app) Tj
+0 -12 Td
+(  ) Tj
+0 -12 Td
+(  Opzione A - App Desktop \(Electron\):) Tj
+0 -12 Td
+(    npm run electron) Tj
+0 -12 Td
+(  ) Tj
+0 -12 Td
+(  Opzione B - App Web \(nel browser\):) Tj
+0 -12 Td
+(    npm run dev) Tj
+0 -12 Td
+(    Poi apri il browser a: http://localhost:5173) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PASSO 4: Sviluppo o Build) Tj
+0 -12 Td
+(  ) Tj
+0 -12 Td
+(  Per la modalit‡ sviluppo con hot-reload:) Tj
+0 -12 Td
+(    npm run electron-dev) Tj
+0 -12 Td
+(  ) Tj
+0 -12 Td
+(  Per creare un eseguibile:) Tj
+0 -12 Td
+(    npm run electron-build) Tj
+0 -12 Td
+(    \(Il file .exe sar‡ in ./dist/\)) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(5. AVVIO DELL'APPLICAZIONE) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(METODO 1 \(Exe\):) Tj
+0 -12 Td
+(  1. Doppio click sull'icona sul desktop) Tj
+0 -12 Td
+(     oppure) Tj
+0 -12 Td
+(  2. Cerca "Analizzatore di Mesh 3D" nel menu Start) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(METODO 2 \(Versione completa\):) Tj
+0 -12 Td
+(  1. Apri PowerShell) Tj
+0 -12 Td
+(  2. Naviga nella cartella del progetto) Tj
+0 -12 Td
+(  3. Digita uno dei comandi:) Tj
+0 -12 Td
+(     - npm run electron \(app desktop\)) Tj
+0 -12 Td
+(     - npm run dev \(app web nel browser\)) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PRIMO AVVIO:) Tj
+0 -12 Td
+(  - La prima volta potrebbe essere pi˘ lento \(caricamento risorse\)) Tj
+0 -12 Td
+(  - Potrebbe apparire una richiesta di accesso ai file) Tj
+0 -12 Td
+(  - Clicca "Consenti" per procedere) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(6. TROUBLESHOOTING) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: Windows Defender blocca l'eseguibile) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Clicca "Ulteriori informazioni" nella finestra di avviso) Tj
+0 -12 Td
+(  2. Clicca "Esegui comunque") Tj
+0 -12 Td
+(  3. Se il problema persiste, aggiungi l'app alle eccezioni di Defender) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: Errore "MSIExec error code 1603" durante l'installazione) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Disinstalla la versione precedente \(se presente\)) Tj
+0 -12 Td
+(  2. Riavvia il computer) Tj
+0 -12 Td
+(  3. Disabilita antivirus/defender temporaneamente) Tj
+0 -12 Td
+(  4. Riprova l'installazione) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: L'app non si avvia dopo l'installazione) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Riavvia il computer) Tj
+0 -12 Td
+(  2. Prova a reinstallare) Tj
+0 -12 Td
+(  3. Verifica lo spazio su disco \(almeno 300 MB liberi\)) Tj
+0 -12 Td
+(  4. Controlla i file di log in: %APPDATA%\\Analizzatore di Mesh 3D\\) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: Errore "Node.js not found" \(solo METODO 2\)) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Verifica che Node.js sia installato: node --version) Tj
+0 -12 Td
+(  2. Se non installato, scaricalo da https://nodejs.org/) Tj
+0 -12 Td
+(  3. Riavvia il computer dopo l'installazione di Node.js) Tj
+0 -12 Td
+(  4. Riprova il comando npm install) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: Porta 5173 gi‡ in uso \(METODO 2\)) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Il sistema user‡ automaticamente una porta diversa) Tj
+0 -12 Td
+(  2. Controlla il messaggio di output per trovare l'URL) Tj
+0 -12 Td
+(  3. Oppure: Ctrl+C per fermare, riprova) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(PROBLEMA: Applicazione Ë lenta o si blocca) Tj
+0 -12 Td
+(SOLUZIONE:) Tj
+0 -12 Td
+(  1. Verifica la disponibilit‡ di RAM \(almeno 4 GB\)) Tj
+0 -12 Td
+(  2. Chiudi altri programmi pesanti) Tj
+0 -12 Td
+(  3. Prova a ridurre la qualit‡ grafica nelle impostazioni dell'app) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+(7. SUPPORTO TECNICO) Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Per assistenza:) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(EMAIL: supporto@isdidegs.com) Tj
+0 -12 Td
+(TELEFONO: +39 XXX XXX XXXX) Tj
+0 -12 Td
+(SITO WEB: www.isdidegs.com) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Informazioni utili per il supporto:) Tj
+0 -12 Td
+(  - Sistema operativo: Windows 10/11 \(verifica in Impostazioni > Sistema\)) Tj
+0 -12 Td
+(  - Versione app: Visualizza in App > Info) Tj
+0 -12 Td
+(  - Descrizione del problema) Tj
+0 -12 Td
+(  - Screenshot dell'errore \(se presente\)) Tj
+0 -12 Td
+(  - Versione di Node.js \(se applicabile\): node --version) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(FINE DELLA GUIDA) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Grazie per aver scelto l'Analizzatore di Mesh 3D!) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(Documento generato il: 20/06/2026 01:51:58) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+(================================================================================) Tj
+0 -12 Td
+() Tj
+0 -12 Td
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000003314 00000 n 
+0000003382 00000 n 
+0000003508 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+11627
+%%EOF

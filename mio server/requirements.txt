@@ -1,0 +1,7 @@
+fastapi>=0.110.0
+uvicorn>=0.23.0
+./meshlib-3.0.4.121-py38.py39.py310.py311.py312.py313-none-win_amd64.whl
+python-multipart>=0.0.6
+numpy
+open3d
+SimpleITK>=2.5.0

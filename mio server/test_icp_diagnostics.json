@@ -1,0 +1,42 @@
+{
+  "source_filename": "test_source.ply",
+  "target_filename": "test_target.ply",
+  "max_distance": 0.02,
+  "icp_method": "PointToPoint",
+  "diagnostics": {
+    "num_active_pairs_before": 6,
+    "num_samples_before": 6,
+    "used_ransac_fallback": true,
+    "ransac_rmse": 0.0,
+    "num_active_pairs_after": 6,
+    "num_samples_after": 6,
+    "rmse": 0.0,
+    "p2pl": 0.0,
+    "transformation_matrix": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  }
+}
