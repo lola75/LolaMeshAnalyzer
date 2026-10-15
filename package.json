@@ -38,15 +38,15 @@
     "vite": "^5.0.0",
     "wait-on": "^7.0.1"
   },
-  "main": "public/main.js",
+  "main": "public/main.cjs",
   "homepage": "./",
   "build": {
     "appId": "com.isdidegs.meshanalyzer",
     "productName": "Analizzatore di Mesh 3D",
     "files": [
       "dist/**/*",
-      "public/main.js",
-      "public/preload.js",
+      "public/main.cjs",
+      "public/preload.cjs",
       "node_modules/**/*"
     ],
     "directories": {

@@ -42,6 +42,10 @@ if errorlevel 1 (
   goto :errore
 )
 echo [OK] Librerie dell'app installate.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0RiparaElectron.ps1"
+if errorlevel 1 (
+  echo [ATTENZIONE] Electron non e' pronto: l'app nel browser funziona comunque.
+)
 echo.
 
 REM --- 4. Ambiente Python del server ----------------------------------

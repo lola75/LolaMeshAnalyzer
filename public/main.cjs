@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
-const isDev = require('electron-is-dev')
+// electron-is-dev v3 è solo ESM: si usa il controllo integrato di Electron
+const isDev = !app.isPackaged
 const path = require('path')
 const fs = require('fs')
 const http = require('http')
@@ -95,7 +96,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
     },
