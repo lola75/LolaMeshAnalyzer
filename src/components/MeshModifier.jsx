@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { loadSTL } from '../utils/loaders/stlLoader'
 import { loadOBJ } from '../utils/loaders/objLoader'
@@ -22,11 +22,12 @@ import { mergeGeometries, saveMeshFile } from '../utils/stlExport'
 import {
   flipNormals,
   deleteSelectedTriangles,
-  clipByPlane,
   straightenBorder,
   rebuildBorder,
   extendBorder,
 } from '../utils/meshEditing'
+import { offsetPolygon, selectArea, cutByArea, areaPoint } from '../utils/areaCut'
+import { surfacePath, closedLoop, smoothLoopPositions, curveCutSelection, cutByCurve } from '../utils/curveCut'
 import { Line2 } from 'three/examples/jsm/lines/Line2.js'
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
@@ -55,6 +56,30 @@ function Toggle({ checked, onChange, label }) {
       {label}
     </button>
   )
+}
+
+const AREA_COLOR = 0xd946ef // Taglia con Area: contorno e parte da eliminare
+const CURVE_COLOR = 0xdc2626 // Taglia con Linea: contorno e punti
+const CURVE_END_COLOR = 0x22c55e // Taglia con Linea: ultimo punto
+
+// Marcatori rotondi per i punti dei contorni, uno per combinazione di colori
+const markerTextures = new Map()
+const getMarkerTexture = (fill, stroke) => {
+  const key = `${fill}/${stroke}`
+  if (!markerTextures.has(key)) {
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 32
+    const context = canvas.getContext('2d')
+    context.beginPath()
+    context.arc(16, 16, 12, 0, Math.PI * 2)
+    context.fillStyle = fill
+    context.fill()
+    context.lineWidth = 5
+    context.strokeStyle = stroke
+    context.stroke()
+    markerTextures.set(key, new THREE.CanvasTexture(canvas))
+  }
+  return markerTextures.get(key)
 }
 
 const HOLE_COLORS = { hole: 0xdc2626, selected: 0xf97316, outer: 0x94a3b8 }
@@ -305,7 +330,32 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const [cutTool, setCutTool] = useState(null)
   const [cutDraw, setCutDraw] = useState(null) // disegno sullo schermo: { type, points }
   const cutDrawRef = useRef(null)
-  const [cutPlane, setCutPlane] = useState(null) // Linea: piano nelle coordinate originali
+  // Linea: punti cliccati sulla superficie { meshIndex, points: [vertice, ...] }
+  const [curveCut, setCurveCut] = useState(null)
+  const curveCutRef = useRef(null)
+  curveCutRef.current = curveCut
+  const curveDragRef = useRef(null) // indice del punto trascinato
+  const curveFrameRef = useRef({ id: 0, event: null })
+  const curvePathCacheRef = useRef({ mesh: null, paths: new Map() })
+  const [curveCloseHole, setCurveCloseHole] = useState(false)
+  const [curveSaveParts, setCurveSaveParts] = useState(false)
+  const [curveInvert, setCurveInvert] = useState(false)
+  const [curveSmooth, setCurveSmooth] = useState(true)
+  const [curveSmoothStrength, setCurveSmoothStrength] = useState(5)
+  const [curveSmoothDistance, setCurveSmoothDistance] = useState(1)
+  const [curvePreview, setCurvePreview] = useState({ count: 0, error: '' })
+  // Area: poligono tracciato a punti, nelle coordinate originali della mesh
+  // { meshIndex, eye, dir, origin, u, v, points: [[a, b], ...] } (vedi utils/areaCut)
+  const [areaCut, setAreaCut] = useState(null)
+  const areaCutRef = useRef(null)
+  areaCutRef.current = areaCut
+  const areaDragRef = useRef(null) // indice del punto trascinato
+  const [areaOffset, setAreaOffset] = useState(0)
+  const [areaDepth, setAreaDepth] = useState(5)
+  const [areaMaterialCut, setAreaMaterialCut] = useState(false)
+  const [areaSaveParts, setAreaSaveParts] = useState(false)
+  const [areaInvert, setAreaInvert] = useState(false)
+  const [cutBusy, setCutBusy] = useState(false)
   // Modifica Bordo: 'Raddrizza bordo' | 'Ricostruisci bordo' | 'Estendi bordo'
   const [borderTool, setBorderTool] = useState(null)
   const [borderOnlyOuter, setBorderOnlyOuter] = useState(true)
@@ -586,15 +636,19 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       meshesRef.current.push(mesh)
 
       // Center and fit mesh
+      // una parte ricavata da un'altra mesh (displayFrame) usa il riferimento di quella,
+      // così nella vista resta nella sua posizione e alla sua grandezza
+      const frame = meshData.displayFrame
       clonedGeometry.computeBoundingBox()
       const boundingBox = clonedGeometry.boundingBox
       const center = new THREE.Vector3()
-      boundingBox.getCenter(center)
+      if (frame) center.fromArray(frame.center)
+      else boundingBox.getCenter(center)
       clonedGeometry.translate(-center.x, -center.y, -center.z)
       clonedGeometry.computeBoundingBox()
       const size = clonedGeometry.boundingBox.getSize(new THREE.Vector3())
       const maxDim = Math.max(size.x, size.y, size.z)
-      const scale = maxDim > 0 ? 1.5 / maxDim : 1
+      const scale = frame ? frame.scale : maxDim > 0 ? 1.5 / maxDim : 1
       clonedGeometry.scale(scale, scale, scale)
       mesh.position.set(0, 0, 0)
       mesh.rotation.set(0, 0, 0)
@@ -616,13 +670,21 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
     // Se la scena viene ricostruita con le stesse mesh (es. dopo la chiusura di un foro),
     // mantieni inquadratura e orientamento correnti
+    // mantieni inquadratura e orientamento correnti; vale anche quando vengono aggiunte
+    // solo parti ricavate da mesh esistenti, che prendono posizione e rotazione dalla mesh d'origine
     const savedView = viewStateRef.current
-    if (savedView && savedView.meshes.length === meshesRef.current.length) {
+    const savedCount = savedView ? savedView.meshes.length : 0
+    if (
+      savedView &&
+      (savedCount === meshesRef.current.length ||
+        (savedCount < meshes.length && meshes.slice(savedCount).every((m) => m.displayFrame?.sourceIndex < savedCount)))
+    ) {
       camera.position.copy(savedView.cameraPosition)
       camera.quaternion.copy(savedView.cameraQuaternion)
       meshesRef.current.forEach((m, i) => {
-        m.position.copy(savedView.meshes[i].position)
-        m.rotation.copy(savedView.meshes[i].rotation)
+        const saved = savedView.meshes[i < savedCount ? i : meshes[i].displayFrame.sourceIndex]
+        m.position.copy(saved.position)
+        m.rotation.copy(saved.rotation)
       })
     }
 
@@ -1146,7 +1208,23 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
     update()
 
-    brushSceneRef.current = { sceneMesh, ring, update, center, scale }
+    // colora i triangoli indicati da `flags` (1 = colorato); null li toglie tutti
+    const showTriangles = (flags) => {
+      const out = overlayIndex.array
+      let n = 0
+      if (flags) {
+        for (let t = 0; t < flags.length; t++) {
+          if (!flags[t]) continue
+          out[n++] = indices[t * 3]
+          out[n++] = indices[t * 3 + 1]
+          out[n++] = indices[t * 3 + 2]
+        }
+      }
+      overlayGeometry.setDrawRange(0, n)
+      overlayIndex.needsUpdate = true
+    }
+
+    brushSceneRef.current = { sceneMesh, ring, overlay, update, showTriangles, center, scale }
     brushStateRef.current = { active: true, painting: false }
     const canvas = rendererRef.current?.domElement
     if (canvas) canvas.style.cursor = 'crosshair'
@@ -1171,6 +1249,209 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   useEffect(() => {
     brushSceneRef.current?.update({ positions: true, selection: false })
   }, [offsetDistance, offsetFromView, brushData])
+
+  // Taglia con Area: area con offset, nelle coordinate originali della mesh
+  const areaGeometry = (area) => ({ ...area, polygon: offsetPolygon(area.points, areaOffset) })
+  const currentArea = () => {
+    const area = areaCutRef.current
+    return area && brushData && area.meshIndex === brushData.meshIndex ? area : null
+  }
+
+  // Taglia con Area: la parte che verrà eliminata è colorata in viola
+  useEffect(() => {
+    const brushScene = brushSceneRef.current
+    if (cutTool !== 'Area' || !brushData || !brushScene) return
+    brushScene.overlay.material.color.setHex(AREA_COLOR)
+    const area = areaCut && areaCut.meshIndex === brushData.meshIndex && areaCut.points.length >= 3 ? areaCut : null
+    // durante il trascinamento dei punti il calcolo parte solo quando il mouse si ferma
+    const timer = setTimeout(() => {
+      try {
+        if (area) {
+          const depth = areaMaterialCut ? areaDepth : null
+          brushData.selected.set(selectArea(brushData.mesh, areaGeometry(area), { invert: areaInvert, depth }))
+        } else {
+          brushData.selected.fill(0)
+        }
+      } catch (err) {
+        console.error('Anteprima del taglio non riuscita:', err)
+      }
+      brushSceneRef.current?.update({ positions: false, selection: true })
+      setOffsetSelectedCount(countSelected(brushData))
+    }, area ? 60 : 0)
+    return () => {
+      clearTimeout(timer)
+      brushScene.overlay.material.color.setHex(0x964b00)
+    }
+  }, [cutTool, brushData, meshes, areaCut, areaOffset, areaInvert, areaMaterialCut, areaDepth])
+
+  // Taglia con Area: punti, contorno e riempimento del poligono, sempre in primo piano
+  useEffect(() => {
+    const brushScene = brushSceneRef.current
+    if (cutTool !== 'Area' || !brushScene || !areaCut || areaCut.meshIndex !== brushData?.meshIndex || areaCut.points.length === 0) return
+    const { sceneMesh, center, scale } = brushScene
+    const toLocal = (point) => {
+      const [x, y, z] = areaPoint(areaCut, point)
+      return new THREE.Vector3((x - center.x) * scale, (y - center.y) * scale, (z - center.z) * scale)
+    }
+    const overlayMaterial = (extra) => ({ depthTest: false, depthWrite: false, transparent: true, toneMapped: false, ...extra })
+    const group = new THREE.Group()
+    const polygon = offsetPolygon(areaCut.points, areaOffset)
+    if (polygon.length >= 3 && !areaInvert) {
+      const faces = THREE.ShapeUtils.triangulateShape(polygon.map(([a, b]) => new THREE.Vector2(a, b)), [])
+      const fillGeometry = new THREE.BufferGeometry().setFromPoints(polygon.map(toLocal))
+      fillGeometry.setIndex(faces.flat())
+      group.add(new THREE.Mesh(fillGeometry, new THREE.MeshBasicMaterial(overlayMaterial({ color: AREA_COLOR, opacity: 0.3, side: THREE.DoubleSide }))))
+    }
+    const Outline = polygon.length >= 3 ? THREE.LineLoop : THREE.Line
+    group.add(new Outline(new THREE.BufferGeometry().setFromPoints(polygon.map(toLocal)), new THREE.LineBasicMaterial(overlayMaterial({ color: AREA_COLOR }))))
+    group.add(
+      new THREE.Points(
+        new THREE.BufferGeometry().setFromPoints(areaCut.points.map(toLocal)),
+        new THREE.PointsMaterial(overlayMaterial({ size: 11, sizeAttenuation: false, map: getMarkerTexture('#f5d0fe', hexColor(AREA_COLOR)), alphaTest: 0.5 }))
+      )
+    )
+    group.traverse((object) => {
+      object.renderOrder = 30
+      object.frustumCulled = false
+      object.raycast = () => {}
+    })
+    sceneMesh.add(group)
+    return () => {
+      group.removeFromParent()
+      group.traverse((object) => {
+        object.geometry?.dispose()
+        object.material?.dispose()
+      })
+    }
+  }, [cutTool, brushData, meshes, areaCut, areaOffset, areaInvert])
+
+  // Taglia con Area / Linea: Ctrl+Z, Canc o Backspace tolgono l'ultimo punto
+  // (su una linea chiusa riaprono prima il contorno)
+  useEffect(() => {
+    if (cutTool !== 'Area' && cutTool !== 'Linea') return
+    const onKeyDown = (event) => {
+      const undoKey = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z'
+      if (!undoKey && event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select')) return
+      const [current, set] = cutTool === 'Area' ? [areaCutRef.current, setAreaCut] : [curveCutRef.current, setCurveCut]
+      if (!current || current.points.length === 0) return
+      event.preventDefault()
+      // il punto tolto non deve far scattare anche l'annulla del visualizzatore sotto
+      event.stopImmediatePropagation()
+      if (current.closed) set({ ...current, closed: false })
+      else set(current.points.length > 1 ? { ...current, points: current.points.slice(0, -1) } : null)
+    }
+    // in cattura: parte prima degli altri gestori dei tasti registrati sulla finestra
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [cutTool])
+
+  // Taglia con Linea: percorsi sulla superficie tra punti consecutivi (in cache) e, quando
+  // l'utente ha chiuso la linea cliccando sul primo punto, contorno chiuso
+  const curvePaths = useMemo(() => {
+    if (!curveCut || !brushData || curveCut.meshIndex !== brushData.meshIndex) return null
+    const cache = curvePathCacheRef.current
+    if (cache.mesh !== brushData.mesh) {
+      cache.mesh = brushData.mesh
+      cache.paths = new Map()
+    }
+    const pathBetween = (a, b) => {
+      const key = `${a}_${b}`
+      if (!cache.paths.has(key)) cache.paths.set(key, surfacePath(brushData.mesh, a, b))
+      return cache.paths.get(key)
+    }
+    const { points } = curveCut
+    const segments = []
+    for (let i = 0; i + 1 < points.length; i++) segments.push(pathBetween(points[i], points[i + 1]))
+    const closed = !!curveCut.closed && points.length >= 3
+    if (closed) segments.push(pathBetween(points[points.length - 1], points[0]))
+    const broken = segments.some((segment) => !segment)
+    const loop = closed && !broken ? closedLoop(segments) : null
+    return { segments: segments.filter(Boolean), broken, loop: loop && loop.length >= 3 ? loop : null }
+  }, [curveCut, brushData])
+
+  // Taglia con Linea: la parte che verrà eliminata è colorata in marrone
+  useEffect(() => {
+    if (cutTool !== 'Linea' || !brushData || !brushSceneRef.current) return
+    const loop = curvePaths?.loop
+    const timer = setTimeout(() => {
+      let preview = { count: 0, error: curvePaths?.broken ? 'Due punti non sono collegati sulla superficie.' : '' }
+      let removed = null
+      if (loop) {
+        try {
+          const selection = curveCutSelection(brushData.mesh, loop, curveInvert)
+          removed = selection.removed
+          preview = { count: selection.count, error: '' }
+        } catch (err) {
+          preview = { count: 0, error: err.message }
+        }
+      }
+      brushSceneRef.current?.showTriangles(removed)
+      setCurvePreview(preview)
+    }, loop ? 60 : 0)
+    return () => clearTimeout(timer)
+  }, [cutTool, brushData, meshes, curvePaths, curveInvert])
+
+  // cambiando strumento la colorazione torna quella della selezione
+  useEffect(() => () => brushSceneRef.current?.update({ positions: false, selection: true }), [cutTool])
+
+  // Taglia con Linea: contorno sulla superficie (lisciato, se "Tensione Spigoli") e punti
+  useEffect(() => {
+    const brushScene = brushSceneRef.current
+    if (cutTool !== 'Linea' || !brushScene || !curvePaths || curveCut.points.length === 0) return
+    const { sceneMesh, center, scale } = brushScene
+    const P = brushData.mesh.positions
+    const N = brushData.normals
+    // linea e punti leggermente sollevati sulla superficie, per non sparire nella mesh
+    const lift = brushData.mesh.diagonal * 0.0008
+    const toLocal = (x, y, z, v, factor = 1) =>
+      new THREE.Vector3(
+        (x + N[v * 3] * lift * factor - center.x) * scale,
+        (y + N[v * 3 + 1] * lift * factor - center.y) * scale,
+        (z + N[v * 3 + 2] * lift * factor - center.z) * scale
+      )
+    const { loop } = curvePaths
+    let linePoints
+    if (loop && curveSmooth) {
+      const smoothed = smoothLoopPositions(P, loop, curveSmoothStrength, N)
+      linePoints = loop.map((v, i) => toLocal(smoothed[i * 3], smoothed[i * 3 + 1], smoothed[i * 3 + 2], v))
+    } else {
+      const vertices = loop || curvePaths.segments.flat()
+      linePoints = vertices.map((v) => toLocal(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], v))
+    }
+    const group = new THREE.Group()
+    const Line = loop ? THREE.LineLoop : THREE.Line
+    group.add(new Line(new THREE.BufferGeometry().setFromPoints(linePoints), new THREE.LineBasicMaterial({ color: CURVE_COLOR, toneMapped: false })))
+
+    const { points } = curveCut
+    const markerGeometry = new THREE.BufferGeometry().setFromPoints(points.map((v) => toLocal(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], v, 2)))
+    const colors = new Float32Array(points.length * 3)
+    const color = new THREE.Color()
+    points.forEach((_, i) => {
+      color.setHex(!loop && points.length > 1 && i === points.length - 1 ? CURVE_END_COLOR : CURVE_COLOR)
+      color.toArray(colors, i * 3)
+    })
+    markerGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    group.add(
+      new THREE.Points(
+        markerGeometry,
+        new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, vertexColors: true, map: getMarkerTexture('#ffffff', '#7f1d1d'), alphaTest: 0.5, toneMapped: false })
+      )
+    )
+    group.traverse((object) => {
+      object.renderOrder = 30
+      object.frustumCulled = false
+      object.raycast = () => {}
+    })
+    sceneMesh.add(group)
+    return () => {
+      group.removeFromParent()
+      group.traverse((object) => {
+        object.geometry?.dispose()
+        object.material?.dispose()
+      })
+    }
+  }, [cutTool, brushData, meshes, curveCut, curvePaths, curveSmooth, curveSmoothStrength])
 
   // Specchia: cursori del piano e anteprima trasparente della mesh specchiata
   useEffect(() => {
@@ -1998,7 +2279,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   }
 
   // Shift tenuto premuto: cancella invece di colorare
-  // Taglia con Area / Lazo / Linea: disegno sullo schermo con il tasto sinistro
+  // Taglia con Lazo: disegno sullo schermo con il tasto sinistro
   const canvasPoint = (event) => {
     const rect = rendererRef.current.domElement.getBoundingClientRect()
     return [event.clientX - rect.left, event.clientY - rect.top]
@@ -2020,38 +2301,217 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         const last = draw.points[draw.points.length - 1]
         if (Math.hypot(point[0] - last[0], point[1] - last[1]) < 3) return
         cutDrawRef.current = { ...draw, points: [...draw.points, point] }
-      } else {
-        cutDrawRef.current = { ...draw, points: [draw.points[0], point] }
       }
       setCutDraw(cutDrawRef.current)
     },
     up: () => {
       const draw = cutDrawRef.current
       if (!draw) return
-      const [start, end] = [draw.points[0], draw.points[draw.points.length - 1]]
-      if (draw.type === 'Area') {
-        const [x0, x1] = [Math.min(start[0], end[0]), Math.max(start[0], end[0])]
-        const [y0, y1] = [Math.min(start[1], end[1]), Math.max(start[1], end[1])]
-        if (x1 - x0 > 2 && y1 - y0 > 2) selectVerticesOnScreen((x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1, draw.erase)
-        cutDrawRef.current = null
-        setCutDraw(null)
-      } else if (draw.type === 'Lazo') {
-        if (draw.points.length >= 3) selectVerticesOnScreen((x, y) => pointInPolygon(x, y, draw.points), draw.erase)
-        cutDrawRef.current = null
-        setCutDraw(null)
-      } else if (draw.type === 'Linea') {
-        if (Math.hypot(end[0] - start[0], end[1] - start[1]) < 5) {
-          cutDrawRef.current = null
-          setCutDraw(null)
-          return
-        }
-        setLineCutPlane(start, end) // la linea resta disegnata fino al taglio
-      }
+      if (draw.points.length >= 3) selectVerticesOnScreen((x, y) => pointInPolygon(x, y, draw.points), draw.erase)
+      cutDrawRef.current = null
+      setCutDraw(null)
     },
     leave: () => {},
   }
 
-  brushHandlersRef.current = cutTool && cutTool !== 'Pennello' ? drawHandlers : {
+  // Taglia con Area: raggio del mouse nelle coordinate originali della mesh
+  const meshRay = (event) => {
+    const matrices = meshToClipMatrix()
+    const canvas = rendererRef.current?.domElement
+    const camera = cameraRef.current
+    if (!matrices || !canvas || !camera) return null
+    const rect = canvas.getBoundingClientRect()
+    const ndc = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    )
+    const raycaster = new THREE.Raycaster()
+    raycaster.setFromCamera(ndc, camera)
+    const toMesh = matrices.toWorld.clone().invert()
+    return {
+      origin: raycaster.ray.origin.clone().applyMatrix4(toMesh),
+      direction: raycaster.ray.direction.clone().transformDirection(toMesh),
+      toMesh,
+    }
+  }
+
+  // Piano dell'area: perpendicolare alla vista attuale e passante per il centro della mesh.
+  // Il taglio proietta il poligono in profondità da questa posizione della telecamera.
+  const newAreaFrame = (ray) => {
+    const camera = cameraRef.current
+    const brushScene = brushSceneRef.current
+    const dir = camera.getWorldDirection(new THREE.Vector3()).transformDirection(ray.toMesh)
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).transformDirection(ray.toMesh)
+    const u = new THREE.Vector3().crossVectors(dir, up).normalize()
+    const v = new THREE.Vector3().crossVectors(u, dir).normalize()
+    const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(ray.toMesh)
+    return {
+      meshIndex: brushData.meshIndex,
+      eye: eye.toArray(),
+      dir: dir.toArray(),
+      origin: [brushScene.center.x, brushScene.center.y, brushScene.center.z],
+      u: u.toArray(),
+      v: v.toArray(),
+      points: [],
+    }
+  }
+
+  const areaPointOnPlane = (area, ray) => {
+    const normal = new THREE.Vector3(...area.dir)
+    const denominator = ray.direction.dot(normal)
+    if (Math.abs(denominator) < 1e-6) return null
+    const origin = new THREE.Vector3(...area.origin)
+    const t = origin.clone().sub(ray.origin).dot(normal) / denominator
+    if (t <= 0) return null
+    const q = ray.origin.clone().addScaledVector(ray.direction, t).sub(origin)
+    return [q.dot(new THREE.Vector3(...area.u)), q.dot(new THREE.Vector3(...area.v))]
+  }
+
+  // Posizione sullo schermo dei punti dell'area (null se dietro la telecamera)
+  const screenPoints = (points) => {
+    const matrices = meshToClipMatrix()
+    const canvas = rendererRef.current?.domElement
+    if (!matrices || !canvas) return []
+    return points.map((point) => {
+      const clip = new THREE.Vector4(...point, 1).applyMatrix4(matrices.toClip)
+      if (clip.w <= 0) return null
+      return [((clip.x / clip.w + 1) / 2) * canvas.clientWidth, ((1 - clip.y / clip.w) / 2) * canvas.clientHeight]
+    })
+  }
+
+  // indice del punto vicino (entro 8 pixel) alla posizione del mouse, -1 se nessuno
+  const pointUnderMouse = (event, positions) => {
+    const [x, y] = canvasPoint(event)
+    return screenPoints(positions).findIndex((p) => p && Math.hypot(p[0] - x, p[1] - y) <= 8)
+  }
+
+  const setAreaCutNow = (area) => {
+    areaCutRef.current = area
+    setAreaCut(area)
+  }
+
+  const areaHandlers = {
+    down: (event) => {
+      if (!brushData || cutBusy) return false
+      const ray = meshRay(event)
+      if (!ray) return false
+      let area = currentArea()
+      if (area) {
+        // clic vicino a un punto esistente: lo si trascina
+        const index = pointUnderMouse(event, area.points.map((point) => areaPoint(area, point)))
+        if (index !== -1) {
+          areaDragRef.current = index
+          return true
+        }
+      } else {
+        area = newAreaFrame(ray)
+      }
+      const point = areaPointOnPlane(area, ray)
+      if (!point) return true
+      const next = { ...area, points: [...area.points, point] }
+      areaDragRef.current = next.points.length - 1
+      setAreaCutNow(next)
+      return true
+    },
+    move: (event) => {
+      const index = areaDragRef.current
+      const area = currentArea()
+      if (index === null || !area || !brushStateRef.current.painting) return
+      const ray = meshRay(event)
+      const point = ray && areaPointOnPlane(area, ray)
+      if (!point) return
+      setAreaCutNow({ ...area, points: area.points.map((p, i) => (i === index ? point : p)) })
+    },
+    up: () => {
+      areaDragRef.current = null
+    },
+    leave: () => {},
+  }
+
+  // Taglia con Linea: punti agganciati ai vertici della mesh
+  const currentCurve = () => {
+    const curve = curveCutRef.current
+    return curve && brushData && curve.meshIndex === brushData.meshIndex ? curve : null
+  }
+
+  const vertexPosition = (v) => {
+    const P = brushData.mesh.positions
+    return [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]
+  }
+
+  // vertice del triangolo sotto il mouse più vicino al punto colpito
+  const pickCurveVertex = (event) => {
+    const hit = pickBrushHit(event)
+    const brushScene = brushSceneRef.current
+    if (!hit?.face || !brushScene) return null
+    const { sceneMesh, center, scale } = brushScene
+    const local = sceneMesh.worldToLocal(hit.point.clone())
+    const point = [local.x / scale + center.x, local.y / scale + center.y, local.z / scale + center.z]
+    let best = null
+    let bestDistance = Infinity
+    for (const v of [hit.face.a, hit.face.b, hit.face.c]) {
+      const [x, y, z] = vertexPosition(v)
+      const distance = Math.hypot(x - point[0], y - point[1], z - point[2])
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = v
+      }
+    }
+    return best
+  }
+
+  const setCurveCutNow = (curve) => {
+    curveCutRef.current = curve
+    setCurveCut(curve)
+  }
+
+  const curveHandlers = {
+    down: (event) => {
+      if (!brushData || cutBusy) return false
+      const curve = currentCurve()
+      if (curve) {
+        // clic vicino a un punto esistente: lo si trascina sulla superficie
+        const index = pointUnderMouse(event, curve.points.map(vertexPosition))
+        if (index !== -1) {
+          // clic sul primo punto con almeno 3 punti: l'utente chiude la linea
+          if (index === 0 && !curve.closed && curve.points.length >= 3) setCurveCutNow({ ...curve, closed: true })
+          curveDragRef.current = index
+          return true
+        }
+      }
+      const vertex = pickCurveVertex(event)
+      if (vertex === null) return false // clic sullo sfondo: ruota la vista
+      if (curve?.closed) return true // linea già chiusa: si possono solo spostare i punti
+      const points = curve ? curve.points : []
+      if (points[points.length - 1] !== vertex) {
+        setCurveCutNow({ meshIndex: brushData.meshIndex, points: [...points, vertex], closed: false })
+      }
+      curveDragRef.current = curveCutRef.current.points.length - 1
+      return true
+    },
+    move: (event) => {
+      if (curveDragRef.current === null || !brushStateRef.current.painting) return
+      const frame = curveFrameRef.current
+      frame.event = event
+      if (frame.id) return
+      frame.id = requestAnimationFrame(() => {
+        frame.id = 0
+        const index = curveDragRef.current
+        const curve = currentCurve()
+        if (index === null || !curve) return
+        const vertex = pickCurveVertex(frame.event)
+        if (vertex === null || vertex === curve.points[index]) return
+        setCurveCutNow({ ...curve, points: curve.points.map((v, i) => (i === index ? vertex : v)) })
+      })
+    },
+    up: () => {
+      curveDragRef.current = null
+    },
+    leave: () => {},
+  }
+
+  brushHandlersRef.current =
+    cutTool === 'Area' ? areaHandlers : cutTool === 'Linea' ? curveHandlers : cutTool && cutTool !== 'Pennello' ? drawHandlers : {
     down: (event) => {
       const hit = pickBrushHit(event)
       if (!hit) return false
@@ -2137,53 +2597,15 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     return inside
   }
 
-  // Linea: piano che passa per la telecamera e per la linea disegnata; viene eliminata la parte colorata
-  const selectPlaneSide = (plane) => {
-    if (!brushData) return
-    const P = brushData.mesh.positions
-    const { selected } = brushData
-    const [nx, ny, nz] = plane.normal
-    for (let v = 0; v < selected.length; v++) {
-      selected[v] = nx * P[v * 3] + ny * P[v * 3 + 1] + nz * P[v * 3 + 2] + plane.constant > 0 ? 1 : 0
-    }
-    brushSceneRef.current?.update({ positions: false, selection: true })
-    setOffsetSelectedCount(countSelected(brushData))
-  }
-
-  const setLineCutPlane = (start, end) => {
-    const matrices = meshToClipMatrix()
-    const canvas = rendererRef.current?.domElement
-    const camera = cameraRef.current
-    if (!matrices || !canvas || !camera) return
-    const toNdc = ([x, y]) => new THREE.Vector2((x / canvas.clientWidth) * 2 - 1, -(y / canvas.clientHeight) * 2 + 1)
-    const raycaster = new THREE.Raycaster()
-    raycaster.setFromCamera(toNdc(start), camera)
-    const rayA = raycaster.ray.clone()
-    raycaster.setFromCamera(toNdc(end), camera)
-    const rayB = raycaster.ray.clone()
-    // piano che contiene i due raggi del mouse
-    const normal = rayA.direction.clone().cross(rayB.direction)
-    if (normal.lengthSq() < 1e-12) normal.copy(rayB.origin.clone().sub(rayA.origin)).cross(rayA.direction)
-    if (normal.lengthSq() < 1e-12) return
-    const plane = new THREE.Plane()
-      .setFromNormalAndCoplanarPoint(normal.normalize(), rayA.origin)
-      .applyMatrix4(matrices.toWorld.clone().invert())
-    const next = { normal: [plane.normal.x, plane.normal.y, plane.normal.z], constant: plane.constant }
-    setCutPlane(next)
-    selectPlaneSide(next)
-  }
-
-  const flipCutSide = () => {
-    if (!cutPlane) return
-    const next = { normal: cutPlane.normal.map((value) => -value), constant: -cutPlane.constant }
-    setCutPlane(next)
-    selectPlaneSide(next)
-  }
-
   const clearCut = () => {
     cutDrawRef.current = null
     setCutDraw(null)
-    setCutPlane(null)
+    curveCutRef.current = null
+    curveDragRef.current = null
+    setCurveCut(null)
+    areaCutRef.current = null
+    areaDragRef.current = null
+    setAreaCut(null)
   }
 
   // Sostituisce la geometria di una mesh e memorizza il passo nella cronologia
@@ -2203,10 +2625,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     const target = meshes[meshIndex]
     if (!target || target.geometry !== brushData.geometry) return
     try {
-      const result =
-        cutTool === 'Linea' && cutPlane
-          ? clipByPlane(brushData.mesh, cutPlane.normal, cutPlane.constant)
-          : deleteSelectedTriangles(brushData)
+      const result = deleteSelectedTriangles(brushData)
       replaceMeshGeometry(meshIndex, target.geometry, result.geometry, `Taglia con ${cutTool}`)
       clearCut()
       showTimedMessage(`✅ Taglio eseguito: ${result.removedTriangles.toLocaleString('it-IT')} triangoli eliminati.`)
@@ -2214,6 +2633,90 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       console.error('Taglio non riuscito:', err)
       showTimedMessage(`❌ Taglio non riuscito: ${err.message}`)
     }
+  }
+
+  // Taglia con Area: elimina la parte dentro il poligono (o fuori, se invertito), in
+  // profondità o solo per la profondità di fresatura; la parte tagliata può diventare una nuova mesh
+  const applyAreaCut = () => {
+    const area = currentArea()
+    if (!brushData || !area || area.points.length < 3 || cutBusy) return
+    const meshIndex = brushData.meshIndex
+    const target = meshes[meshIndex]
+    if (!target || target.geometry !== brushData.geometry) return
+    const options = { invert: areaInvert, depth: areaMaterialCut ? areaDepth : null, keepRemoved: areaSaveParts }
+    const geometryArea = areaGeometry(area)
+    runCut('Taglia con Area', () => cutByArea(brushData.mesh, geometryArea, options))
+  }
+
+  // Taglia con Linea: elimina la zona chiusa dal contorno (o l'altra, se invertito);
+  // con "Chiudi Foro" il foro lasciato dal taglio viene chiuso
+  const applyCurveCut = () => {
+    const loop = curvePaths?.loop
+    if (!brushData || !loop || cutBusy) return
+    const options = {
+      invert: curveInvert,
+      keepRemoved: curveSaveParts,
+      smoothing: curveSmooth ? { strength: curveSmoothStrength, distance: curveSmoothDistance, normals: brushData.normals } : null,
+    }
+    const closeHole = curveCloseHole
+    runCut('Taglia con Linea', async () => {
+      const result = cutByCurve(brushData.mesh, loop, options)
+      if (!closeHole) return result
+      // foro del taglio: il bordo con il baricentro più vicino a quello del contorno
+      const { holes } = analyzeHoles(result.geometry)
+      const distance = (hole) => Math.hypot(...hole.centroid.map((value, k) => value - result.borderCentroid[k]))
+      const hole = holes.reduce((best, h) => (!best || distance(h) < distance(best) ? h : best), null)
+      if (!hole) return result
+      setMessage('⏳ Chiusura del foro in corso...')
+      const filled = await fillHolesAsync(result.geometry, [hole.id], 'smooth')
+      return { ...result, geometry: filled.geometry, holeClosed: true }
+    })
+  }
+
+  // Esegue un taglio: `compute` restituisce (anche in modo asincrono) la mesh rimasta e,
+  // se richiesta, la parte tagliata, che diventa una nuova mesh nella stessa posizione
+  const runCut = (label, compute) => {
+    const meshIndex = brushData.meshIndex
+    const target = meshes[meshIndex]
+    if (!target || target.geometry !== brushData.geometry) return
+    // riferimento della vista della mesh tagliata: le due parti restano dove erano
+    const { center, scale } = brushSceneRef.current
+    const displayFrame = { center: center.toArray(), scale }
+    setCutBusy(true)
+    setMessage('⏳ Taglio in corso...')
+    setTimeout(async () => {
+      try {
+        const result = await compute()
+        if (meshesStateRef.current[meshIndex]?.geometry !== target.geometry) {
+          showTimedMessage('⚠️ La mesh è cambiata durante il calcolo: taglio annullato.')
+          return
+        }
+        pushHistory(label, { meshIndex, previous: target.geometry, repaired: result.geometry })
+        setMeshes((prev) => {
+          const next = prev.map((m, i) => (i === meshIndex ? { ...m, geometry: result.geometry, displayFrame } : m))
+          if (!result.removedGeometry) return next
+          const part = {
+            geometry: result.removedGeometry,
+            name: `${target.name || 'Mesh'} - parte tagliata`,
+            visible: true,
+            displayFrame: { ...displayFrame, sourceIndex: meshIndex },
+          }
+          return [...next, part]
+        })
+        clearCut()
+        const count = result.removedTriangles.toLocaleString('it-IT')
+        showTimedMessage(
+          (result.removedGeometry
+            ? `✅ Taglio eseguito: ${count} triangoli separati nella nuova mesh "${target.name || 'Mesh'} - parte tagliata".`
+            : `✅ Taglio eseguito: ${count} triangoli eliminati.`) + (result.holeClosed ? ' Foro chiuso.' : '')
+        )
+      } catch (err) {
+        console.error('Taglio non riuscito:', err)
+        showTimedMessage(`❌ Taglio non riuscito: ${err.message}`)
+      } finally {
+        setCutBusy(false)
+      }
+    }, 30)
   }
 
   // Chiude tutti i pannelli degli strumenti (prima memorizza le modifiche in anteprima)
@@ -3624,21 +4127,6 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           <div ref={containerRef} className="render-bg w-full h-full" />
           {cutDraw && (
             <svg className="pointer-events-none absolute inset-0 h-full w-full">
-              {cutDraw.type === 'Area' && (() => {
-                const [[x0, y0], [x1, y1]] = [cutDraw.points[0], cutDraw.points[cutDraw.points.length - 1]]
-                return (
-                  <rect
-                    x={Math.min(x0, x1)}
-                    y={Math.min(y0, y1)}
-                    width={Math.abs(x1 - x0)}
-                    height={Math.abs(y1 - y0)}
-                    fill="rgba(150,75,0,0.15)"
-                    stroke="#964B00"
-                    strokeWidth="2"
-                    strokeDasharray="6 4"
-                  />
-                )
-              })()}
               {cutDraw.type === 'Lazo' && (
                 <polygon
                   points={cutDraw.points.map((point) => point.join(',')).join(' ')}
@@ -3646,17 +4134,6 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                   stroke="#964B00"
                   strokeWidth="2"
                   strokeDasharray="6 4"
-                />
-              )}
-              {cutDraw.type === 'Linea' && (
-                <line
-                  x1={cutDraw.points[0][0]}
-                  y1={cutDraw.points[0][1]}
-                  x2={cutDraw.points[cutDraw.points.length - 1][0]}
-                  y2={cutDraw.points[cutDraw.points.length - 1][1]}
-                  stroke="#964B00"
-                  strokeWidth="3"
-                  strokeDasharray="8 5"
                 />
               )}
             </svg>
@@ -4296,11 +4773,231 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const setDiameter = (value) =>
             setBrushDiameter(Math.min(maxDiameter, Math.max(step, Math.round((Number(value) || 0) / step) * step)))
           const help = {
-            Area: 'Tieni premuto il tasto sinistro e trascina per disegnare un rettangolo: la parte della mesh al suo interno diventa marrone.',
             Pennello: 'Tieni premuto il tasto sinistro sulla mesh e trascina per colorare la parte da eliminare.',
             Lazo: 'Tieni premuto il tasto sinistro e disegna un contorno libero attorno alla parte da eliminare.',
-            Linea: 'Traccia una linea con il tasto sinistro: la mesh viene tagliata lungo la linea, in profondità. La parte marrone viene eliminata.',
           }[cutTool]
+          // riga con cursore e campo numerico (in mm, salvo `options.unit`)
+          const numberClass = 'w-16 px-1.5 py-0.5 border border-slate-300 rounded-md text-sm text-right tabular-nums disabled:bg-slate-50'
+          const sliderRow = (id, label, value, min, max, onChange, disabled = false, options = {}) => {
+            const rowStep = options.step ?? step
+            const rowDecimals = options.decimals ?? decimals
+            const rowUnit = options.unit ?? 'mm'
+            const clampTo = (raw) => Math.min(max, Math.max(min, Math.round((Number(raw) || 0) / rowStep) * rowStep))
+            return (
+              <>
+                <label className={`text-slate-600 ${disabled ? 'opacity-50' : ''}`} htmlFor={id}>{label}</label>
+                <div className={`flex items-center gap-2 ${disabled ? 'opacity-50' : ''}`}>
+                  <input
+                    id={id}
+                    type="range"
+                    min={min}
+                    max={max}
+                    step={rowStep}
+                    value={value}
+                    disabled={disabled}
+                    onChange={(e) => onChange(clampTo(e.target.value))}
+                    className="flex-1 min-w-0 accent-sky-600 disabled:cursor-not-allowed"
+                  />
+                  <input
+                    type="number"
+                    min={min}
+                    max={max}
+                    step={rowStep}
+                    value={Number(value.toFixed(rowDecimals))}
+                    disabled={disabled}
+                    onChange={(e) => onChange(clampTo(e.target.value))}
+                    className={numberClass}
+                    aria-label={rowUnit ? `${label} in ${rowUnit}` : label}
+                  />
+                  <span className="w-6 text-slate-500">{rowUnit}</span>
+                </div>
+              </>
+            )
+          }
+          const header = (
+            <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Taglia con {cutTool}</div>
+                <div className="text-xs text-slate-500 truncate max-w-[260px]">{meshes[selectedMeshIndex].name}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleCutTool(cutTool)}
+                className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100"
+                aria-label="Chiudi Taglia"
+              >
+                ×
+              </button>
+            </div>
+          )
+          if (cutTool === 'Linea') {
+            const curve = ready && curveCut?.meshIndex === brushData.meshIndex ? curveCut : null
+            const pointCount = curve ? curve.points.length : 0
+            const maxSmoothDistance = Math.max(unit * 10, Math.ceil((diagonal * 0.05) / unit) * unit)
+            return (
+              <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+                {header}
+                <div className="px-4 py-3 space-y-3">
+                  {!ready ? (
+                    <div className="text-xs text-slate-600">⏳ Preparazione in corso...</div>
+                  ) : (
+                    <>
+                      <div className="text-xs text-slate-500">
+                        Clicca sulla mesh per aggiungere i punti: la linea segue la superficie. Per chiudere il contorno clicca
+                        sul primo punto. Trascina un punto per spostarlo, Ctrl+Z (o Canc) toglie l&apos;ultimo (su una linea chiusa la
+                        riapre). La parte marrone viene eliminata.
+                        Per ruotare la vista trascina sullo sfondo o usa il tasto destro.
+                      </div>
+
+                      <div className="flex flex-col items-start gap-2.5">
+                        <Toggle checked={curveCloseHole} onChange={setCurveCloseHole} label="Chiudi Foro" />
+                        <Toggle checked={curveSaveParts} onChange={setCurveSaveParts} label="Salva Parti Tagliate" />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={clearCut}
+                        disabled={pointCount === 0 || cutBusy}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Annulla Curva
+                      </button>
+
+                      <div className="flex flex-col items-start gap-2.5">
+                        <Toggle checked={curveInvert} onChange={setCurveInvert} label="Inverti Area Taglio" />
+                        <Toggle checked={curveSmooth} onChange={setCurveSmooth} label="Tensione Spigoli" />
+                      </div>
+
+                      <div className="grid grid-cols-[130px_1fr] items-center gap-x-3 gap-y-3 text-sm">
+                        {sliderRow('curve-smooth-strength', 'Forza Lisciatura', curveSmoothStrength, 1, 50, setCurveSmoothStrength, !curveSmooth, {
+                          step: 1,
+                          decimals: 0,
+                          unit: '',
+                        })}
+                        {sliderRow('curve-smooth-distance', 'Distanza Lisciatura', Math.min(curveSmoothDistance, maxSmoothDistance), 0, maxSmoothDistance, setCurveSmoothDistance, !curveSmooth)}
+                      </div>
+
+                      <div className="text-xs text-slate-600 tabular-nums">
+                        Punti: <span className="font-semibold text-slate-900">{pointCount}</span>
+                        {' · '}Triangoli da tagliare:{' '}
+                        <span className="font-semibold text-[#964B00]">{curvePreview.count.toLocaleString('it-IT')}</span>
+                      </div>
+                      {curve && !curve.closed && pointCount > 0 && (
+                        <div className="text-xs text-slate-600">
+                          {pointCount >= 3 ? '👉 Clicca sul primo punto per chiudere la linea.' : 'Aggiungi almeno 3 punti, poi chiudi la linea sul primo.'}
+                        </div>
+                      )}
+                      {curve?.closed && curvePreview.error && <div className="text-xs text-red-600">⚠️ {curvePreview.error}</div>}
+
+                      <button
+                        type="button"
+                        onClick={applyCurveCut}
+                        disabled={!curvePaths?.loop || curvePreview.count === 0 || cutBusy}
+                        className="w-full px-3 py-2.5 rounded-lg bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {cutBusy ? '⏳ Taglio...' : 'Taglia'}
+                      </button>
+
+                      {lastEditUndoable() && (
+                        <button
+                          type="button"
+                          onClick={undoLastEdit}
+                          disabled={cutBusy}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          ↶ Annulla ultima modifica
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          }
+          if (cutTool === 'Area') {
+            const area = ready && areaCut?.meshIndex === brushData.meshIndex ? areaCut : null
+            const pointCount = area ? area.points.length : 0
+            const maxOffset = Math.max(unit * 10, Math.ceil((diagonal * 0.05) / unit) * unit)
+            const maxDepth = Math.max(unit * 20, Math.ceil((diagonal * 0.2) / unit) * unit)
+            return (
+              <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+                <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">Taglia con Area</div>
+                    <div className="text-xs text-slate-500 truncate max-w-[260px]">{meshes[selectedMeshIndex].name}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleCutTool('Area')}
+                    className="h-7 w-7 flex items-center justify-center rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100"
+                    aria-label="Chiudi Taglia"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="px-4 py-3 space-y-3">
+                  {!ready ? (
+                    <div className="text-xs text-slate-600">⏳ Preparazione in corso...</div>
+                  ) : (
+                    <>
+                      <div className="text-xs text-slate-500">
+                        Clicca con il tasto sinistro per aggiungere i punti del contorno; trascina un punto per spostarlo, Ctrl+Z (o Canc) toglie
+                        l&apos;ultimo. Il taglio segue la direzione della vista del primo punto. Per ruotare la vista usa il tasto destro.
+                      </div>
+
+                      <div className="grid grid-cols-[130px_1fr] items-center gap-x-3 gap-y-3 text-sm">
+                        {sliderRow('area-cut-offset', 'Offset', areaOffset, 0, maxOffset, setAreaOffset)}
+                        {sliderRow('area-cut-depth', 'Profondità Fresatura', Math.min(areaDepth, maxDepth), step, maxDepth, setAreaDepth, !areaMaterialCut)}
+                      </div>
+
+                      <div className="flex flex-col items-start gap-2.5">
+                        <Toggle checked={areaMaterialCut} onChange={setAreaMaterialCut} label="Taglio del Materiale" />
+                        <Toggle checked={areaSaveParts} onChange={setAreaSaveParts} label="Salva Parti Tagliate" />
+                        <Toggle checked={areaInvert} onChange={setAreaInvert} label="Inverti Selezione" />
+                      </div>
+
+                      <div className="text-xs text-slate-600 tabular-nums">
+                        Punti: <span className="font-semibold text-slate-900">{pointCount}</span>
+                        {' · '}Vertici da tagliare:{' '}
+                        <span className="font-semibold text-fuchsia-600">{offsetSelectedCount.toLocaleString('it-IT')}</span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={clearCut}
+                          disabled={pointCount === 0 || cutBusy}
+                          className="px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Deseleziona
+                        </button>
+                        <button
+                          type="button"
+                          onClick={applyAreaCut}
+                          disabled={pointCount < 3 || cutBusy}
+                          className="px-3 py-2.5 rounded-lg bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {cutBusy ? '⏳ Taglio...' : 'Taglia'}
+                        </button>
+                      </div>
+
+                      {lastEditUndoable() && (
+                        <button
+                          type="button"
+                          onClick={undoLastEdit}
+                          disabled={cutBusy}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          ↶ Annulla ultima modifica
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          }
           return (
             <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
@@ -4327,9 +5024,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                       {help}{' '}
                       {cutTool === 'Pennello'
                         ? 'Con Shift premuto cancelli. Trascinando sullo sfondo ruoti la vista.'
-                        : cutTool === 'Linea'
-                          ? 'Per ruotare la vista usa il tasto destro.'
-                          : 'Con Shift premuto togli dalla selezione. Per ruotare la vista usa il tasto destro.'}
+                        : 'Con Shift premuto togli dalla selezione. Per ruotare la vista usa il tasto destro.'}
                     </div>
 
                     {cutTool === 'Pennello' && (
@@ -4378,33 +5073,22 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                       >
                         Cancella Selezione
                       </button>
-                      {cutTool === 'Linea' ? (
-                        <button
-                          type="button"
-                          onClick={flipCutSide}
-                          disabled={!cutPlane}
-                          className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Inverti lato
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => changeBrushSelection(invertSelection)}
-                          className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
-                        >
-                          Inverti Selezione
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => changeBrushSelection(invertSelection)}
+                        className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Inverti Selezione
+                      </button>
                     </div>
 
                     <button
                       type="button"
                       onClick={applyCut}
-                      disabled={offsetSelectedCount === 0 || (cutTool === 'Linea' && !cutPlane)}
+                      disabled={offsetSelectedCount === 0}
                       className="w-full px-3 py-2.5 rounded-lg bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {cutTool === 'Linea' ? 'Taglia' : 'Elimina selezione'}
+                      Elimina selezione
                     </button>
 
                     {lastEditUndoable() && (

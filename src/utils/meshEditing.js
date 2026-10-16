@@ -9,7 +9,7 @@ const EDGE_KEY_BASE = 67108864
 const edgeKey = (a, b) => (a < b ? a * EDGE_KEY_BASE + b : b * EDGE_KEY_BASE + a)
 
 // Geometria dai vertici usati da `indices` (i vertici non usati vengono scartati)
-function buildGeometry(positions, colors, indices) {
+export function buildGeometry(positions, colors, indices) {
   const remap = new Int32Array(positions.length / 3).fill(-1)
   const outPositions = []
   const outColors = colors ? [] : null
