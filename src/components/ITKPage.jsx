@@ -41,7 +41,6 @@ export default function ITKPage({ onClose, initialServerId = getSavedServerId(),
   const [showRegistrationError, setShowRegistrationError] = useState(false)
 
   const fileRefsRef = useRef({ source: null, target: null })
-  const serverStartPromiseRef = useRef(null)
 
   useEffect(() => {
     console.log('🟢 ITKPage: sourcePoints updated:', sourcePoints.length, sourcePoints)
@@ -51,52 +50,47 @@ export default function ITKPage({ onClose, initialServerId = getSavedServerId(),
     console.log('🟢 ITKPage: targetPoints updated:', targetPoints.length, targetPoints)
   }, [targetPoints])
 
+  // Avvia (se serve) il server selezionato tramite Electron e ne verifica lo stato.
+  // autoStartServer1 abilita l'avvio automatico per entrambi i server mesh.
+  const startAndCheckServer = async (isMounted = () => true) => {
+    setServerChecking(true)
+    try {
+      const startServer = window.electron?.startMeshServer
+      if (autoStartServer1 && typeof startServer === 'function') {
+        const result = await startServer(selectedServerId)
+        if (!result?.success) {
+          throw new Error(result?.error || `Avvio di ${selectedServer.name} non riuscito.`)
+        }
+      }
+
+      const online = await checkServerHealth(selectedServer.url)
+      if (isMounted()) {
+        setServerOnline(online)
+        if (online) {
+          setError(null)
+        } else if (autoStartServer1 && typeof startServer !== 'function') {
+          setError(`Avvio automatico disponibile solo nell’app desktop. Avvia manualmente ${selectedServer.name} per continuare.`)
+        }
+      }
+    } catch (error) {
+      if (isMounted()) {
+        setServerOnline(false)
+        setError(`Impossibile avviare ${selectedServer.name}: ${error.message}`)
+      }
+    } finally {
+      if (isMounted()) setServerChecking(false)
+    }
+  }
+
   useEffect(() => {
     let mounted = true
-    const checkHealth = async () => {
-      setServerChecking(true)
-      try {
-        const startServer = window.electron?.startMeshServer1
-        if (autoStartServer1 && selectedServerId === 'server1' && typeof startServer === 'function') {
-          if (!serverStartPromiseRef.current) {
-            serverStartPromiseRef.current = startServer()
-          }
-          const result = await serverStartPromiseRef.current
-          if (!result?.success) {
-            throw new Error(result?.error || 'Avvio di Server 1 non riuscito.')
-          }
-        }
-
-        const online = await checkServerHealth(selectedServer.url)
-        if (mounted) {
-          setServerOnline(online)
-          if (!online && autoStartServer1 && selectedServerId === 'server1' && typeof startServer !== 'function') {
-            setError('Avvio automatico disponibile solo nell’app desktop. Avvia manualmente Server 1 per continuare.')
-          }
-        }
-      } catch (error) {
-        if (mounted) {
-          setServerOnline(false)
-          setError(`Impossibile avviare Server 1: ${error.message}`)
-        }
-      } finally {
-        if (mounted) setServerChecking(false)
-      }
-    }
-    checkHealth()
+    startAndCheckServer(() => mounted)
     return () => {
       mounted = false
     }
   }, [autoStartServer1, selectedServer.url, selectedServerId])
 
-  const handleCheckServer = async () => {
-    setServerChecking(true)
-    try {
-      setServerOnline(await checkServerHealth(selectedServer.url))
-    } finally {
-      setServerChecking(false)
-    }
-  }
+  const handleCheckServer = () => startAndCheckServer()
 
   const handleServerSelection = (event) => {
     const nextServerId = event.target.value

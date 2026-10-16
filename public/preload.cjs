@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electron', {
   startMeshServer1: async () => {
     return await ipcRenderer.invoke('start-mesh-server1')
   },
+  startMeshServer: async (serverId) => {
+    return await ipcRenderer.invoke('start-mesh-server', serverId)
+  },
   saveInvertedLog: async ({ defaultPath, content }) => {
     return await ipcRenderer.invoke('save-inverted-log', { defaultPath, content })
   }
@@ -19,5 +22,11 @@ contextBridge.exposeInMainWorld('electron', {
   },
   saveMeshFile: async ({ defaultPath, data }) => {
     return await ipcRenderer.invoke('save-mesh-file', { defaultPath, data })
+  },
+  startCbctServer: async () => {
+    return await ipcRenderer.invoke('start-cbct-server')
+  },
+  selectCbctSource: async ({ kind }) => {
+    return await ipcRenderer.invoke('select-cbct-source', { kind })
   }
 })

@@ -6,6 +6,7 @@ import Header from './components/Header'
 import ITKPage from './components/ITKPage'
 import MMXDentalPage from './components/MMXDentalPage'
 import SurgeryPage from './components/SurgeryPage'
+import CbctPage from './components/CbctPage'
 import MMXSettings from './components/MMXSettings'
 import SettingsModal from './components/SettingsModal'
 import PasswordPromptModal from './components/PasswordPromptModal'
@@ -30,6 +31,7 @@ function AppContent() {
   const [showITK, setShowITK] = useState(false)
   const [showMMX, setShowMMX] = useState(false)
   const [showSurgery, setShowSurgery] = useState(false)
+  const [showCbct, setShowCbct] = useState(false)
   const [showMMXSettings, setShowMMXSettings] = useState(false)
   const dentaxTimerRef = React.useRef(null)
 
@@ -333,6 +335,10 @@ function AppContent() {
                 <span className="workspace-action-icon" aria-hidden="true">↔</span>
                 <span>Allineamento automatico</span>
               </button>
+              <button className="workspace-action" onClick={() => setShowCbct(true)}>
+                <span className="workspace-action-icon" aria-hidden="true">◫</span>
+                <span>CBCT</span>
+              </button>
               <button className="workspace-action" onClick={() => setShowMMX(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">◈</span>
                 <span>MMX Dental</span>
@@ -414,6 +420,7 @@ function AppContent() {
       {showITK && <ITKPage onClose={() => setShowITK(false)} initialServerId="server1" autoStartServer1 />}
       {showMMX && <MMXDentalPage onClose={() => setShowMMX(false)} />}
       {showSurgery && <SurgeryPage onClose={() => setShowSurgery(false)} />}
+      {showCbct && <CbctPage onClose={() => setShowCbct(false)} />}
       <MMXSettings isOpen={showMMXSettings} onClose={() => setShowMMXSettings(false)} />
 
       <ChatWindow />

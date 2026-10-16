@@ -18,7 +18,9 @@
     "deploy:local": "npm run build && node server.js"
   },
   "dependencies": {
+    "@niivue/niivue": "0.69.0",
     "express": "^5.2.1",
+    "jszip": "3.10.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "socket.io": "^4.8.0",

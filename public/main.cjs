@@ -6,13 +6,30 @@ const fs = require('fs')
 const http = require('http')
 const { spawn } = require('child_process')
 
-let mainWindow
-let meshServer1Process = null
-let meshServer1StartPromise = null
+// Sui portatili con doppia scheda video usa quella dedicata (serve per il volume CBCT)
+app.commandLine.appendSwitch('force_high_performance_gpu')
 
-function isMeshServer1Online() {
+let mainWindow
+
+// Server Python locali avviati dall'app. I venv sono provati nell'ordine indicato
+// (stesso ordine dei file run_server*.bat).
+const PYTHON_SERVERS = {
+  server1: { name: 'Server 1', script: 'server.py', port: 8000, venvs: ['.venv', '.venv_py311'] },
+  server2: { name: 'Server 2', script: 'server.py', port: 8001, venvs: ['.venv_py311', '.venv2', '.venv'] },
+  cbct: {
+    name: 'Server CBCT',
+    script: 'cbct_server.py',
+    port: 8002,
+    venvs: ['.venv_cbct'],
+    missingVenvError: 'Ambiente Python CBCT non installato. Esegui "mio server\\install_cbct.bat".',
+  },
+}
+const serverProcesses = {}
+const serverStartPromises = {}
+
+function isServerOnline(port) {
   return new Promise((resolve) => {
-    const request = http.get('http://127.0.0.1:8000/health', (response) => {
+    const request = http.get(`http://127.0.0.1:${port}/health`, (response) => {
       response.resume()
       resolve(response.statusCode >= 200 && response.statusCode < 300)
     })
@@ -23,8 +40,23 @@ function isMeshServer1Online() {
   })
 }
 
-async function startMeshServer1() {
-  if (await isMeshServer1Online()) {
+// Su Windows il python.exe del venv è un lanciatore che avvia un secondo processo:
+// child.kill() chiuderebbe solo il lanciatore, quindi si termina l'intero albero
+function stopPythonServer(serverId) {
+  const child = serverProcesses[serverId]
+  serverProcesses[serverId] = null
+  if (!child || child.exitCode !== null || !child.pid) return
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+  } else {
+    child.kill()
+  }
+}
+
+async function startPythonServer(serverId) {
+  const config = PYTHON_SERVERS[serverId]
+  if (!config) return { success: false, error: `Server sconosciuto: ${serverId}` }
+  if (await isServerOnline(config.port)) {
     return { success: true, alreadyRunning: true }
   }
 
@@ -33,29 +65,30 @@ async function startMeshServer1() {
     path.join(path.dirname(process.execPath), 'mio server'),
   ]
   const serverDirectory = serverDirectories.find((directory) =>
-    fs.existsSync(path.join(directory, 'server.py'))
+    fs.existsSync(path.join(directory, config.script))
   )
   if (!serverDirectory) {
+    return { success: false, error: `File ${config.script} non trovato nella cartella "mio server" accanto all’app.` }
+  }
+
+  const pythonExecutable = config.venvs
+    .map((venv) => path.join(serverDirectory, venv, 'Scripts', 'python.exe'))
+    .find((candidate) => fs.existsSync(candidate))
+  if (!pythonExecutable) {
     return {
       success: false,
-      error: 'Cartella "mio server" o file server.py non trovato accanto all’app.',
+      error: config.missingVenvError
+        || `${config.name}: nessun ambiente Python trovato (${config.venvs.join(', ')}) in "mio server".`,
     }
   }
 
-  const pythonCandidates = [
-    path.join(serverDirectory, '.venv', 'Scripts', 'python.exe'),
-    path.join(serverDirectory, '.venv_py311', 'Scripts', 'python.exe'),
-  ]
-  const pythonExecutable = pythonCandidates.find((candidate) => fs.existsSync(candidate))
-    || (process.platform === 'win32' ? 'python' : 'python3')
-
-  const child = spawn(pythonExecutable, [path.join(serverDirectory, 'server.py')], {
+  const child = spawn(pythonExecutable, [path.join(serverDirectory, config.script)], {
     cwd: serverDirectory,
-    env: { ...process.env, PORT: '8000' },
+    env: { ...process.env, PORT: String(config.port) },
     stdio: 'ignore',
     windowsHide: true,
   })
-  meshServer1Process = child
+  serverProcesses[serverId] = child
 
   let launchError = null
   let exitInfo = null
@@ -64,29 +97,38 @@ async function startMeshServer1() {
   })
   child.once('exit', (code, signal) => {
     exitInfo = `Il processo è terminato (codice ${code ?? 'n/d'}, segnale ${signal ?? 'n/d'}).`
-    if (meshServer1Process === child) meshServer1Process = null
+    if (serverProcesses[serverId] === child) serverProcesses[serverId] = null
   })
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (await isMeshServer1Online()) {
+    if (await isServerOnline(config.port)) {
       return { success: true, alreadyRunning: false }
     }
     if (launchError) {
-      meshServer1Process = null
-      return { success: false, error: `Avvio di Server 1 non riuscito: ${launchError.message}` }
+      serverProcesses[serverId] = null
+      return { success: false, error: `Avvio di ${config.name} non riuscito: ${launchError.message}` }
     }
     if (exitInfo) {
-      meshServer1Process = null
-      return { success: false, error: `Server 1 non è partito. ${exitInfo}` }
+      serverProcesses[serverId] = null
+      return { success: false, error: `${config.name} non è partito. ${exitInfo}` }
     }
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
 
-  if (meshServer1Process === child && !child.killed) {
-    child.kill()
-    meshServer1Process = null
+  if (serverProcesses[serverId] === child) stopPythonServer(serverId)
+  return { success: false, error: `${config.name} non risponde sulla porta ${config.port} dopo 20 secondi.` }
+}
+
+// Un solo avvio alla volta per server, anche se più pagine lo chiedono insieme
+function requestServerStart(serverId) {
+  if (!serverStartPromises[serverId]) {
+    serverStartPromises[serverId] = startPythonServer(serverId)
+      .catch((error) => ({ success: false, error: error.message }))
+      .finally(() => {
+        serverStartPromises[serverId] = null
+      })
   }
-  return { success: false, error: 'Server 1 non risponde sulla porta 8000 dopo 20 secondi.' }
+  return serverStartPromises[serverId]
 }
 
 function createWindow() {
@@ -132,21 +174,31 @@ app.on('activate', () => {
   }
 })
 
-ipcMain.handle('start-mesh-server1', async () => {
-  if (!meshServer1StartPromise) {
-    meshServer1StartPromise = startMeshServer1()
-      .catch((error) => ({ success: false, error: error.message }))
-      .finally(() => {
-        meshServer1StartPromise = null
-      })
+ipcMain.handle('start-mesh-server1', () => requestServerStart('server1'))
+
+ipcMain.handle('start-mesh-server', (event, serverId) => {
+  if (serverId !== 'server1' && serverId !== 'server2') {
+    return { success: false, error: `Server mesh sconosciuto: ${serverId}` }
   }
-  return meshServer1StartPromise
+  return requestServerStart(serverId)
+})
+
+ipcMain.handle('start-cbct-server', () => requestServerStart('cbct'))
+
+// Selezione della sorgente CBCT: cartella DICOM oppure file ZIP
+ipcMain.handle('select-cbct-source', async (event, { kind }) => {
+  const isZip = kind === 'zip'
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: isZip ? 'Seleziona lo ZIP della CBCT' : 'Seleziona la cartella DICOM della CBCT',
+    properties: isZip ? ['openFile'] : ['openDirectory'],
+    filters: isZip ? [{ name: 'Archivio ZIP', extensions: ['zip'] }] : undefined,
+  })
+  if (canceled || !filePaths?.length) return { canceled: true }
+  return { canceled: false, path: filePaths[0] }
 })
 
 app.on('before-quit', () => {
-  if (meshServer1Process && !meshServer1Process.killed) {
-    meshServer1Process.kill()
-  }
+  Object.keys(PYTHON_SERVERS).forEach(stopPythonServer)
 })
 
 // IPC handler per salvare il log su file (Save As)

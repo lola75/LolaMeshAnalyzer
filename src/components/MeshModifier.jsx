@@ -1736,9 +1736,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
   const ensureServerOnline = async () => {
     if (await checkServerHealth(selectedServer.url)) return true
-    const startServer = window.electron?.startMeshServer1
-    if (selectedServerId === 'server1' && typeof startServer === 'function') {
-      const result = await startServer()
+    const startServer = window.electron?.startMeshServer
+    if (typeof startServer === 'function') {
+      const result = await startServer(selectedServerId)
       if (result?.success) return checkServerHealth(selectedServer.url)
     }
     return false
