@@ -1,6 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Niivue, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
+import { Niivue, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
 import { apiUrl, checkServerHealth } from '../utils/meshLibBackend'
+import CbctVolumeWizard, { Switch } from './CbctVolumeWizard'
+import CbctBoxOverlay, { FULL_BOX, NO_CLIP_PLANES, boxClipPlanes, boxCornersMm } from './CbctBoxOverlay'
+import CbctCropOverlay from './CbctCropOverlay'
+import CbctLoadingProgress from './CbctLoadingProgress'
+import CbctMeshStep from './CbctMeshStep'
+import CbctImportObjectDialog, { OBJECT_TYPES, POSITION_MATCHING } from './CbctImportObjectDialog'
+import CbctMatchingPanel, { MATCHING_ASSISTED, MATCHING_POINTS } from './CbctMatchingPanel'
+import CbctMeshPreview from './CbctMeshPreview'
+import CbctContrastControls from './CbctContrastControls'
 
 const CBCT_SERVER_URL = 'http://127.0.0.1:8002'
 
@@ -12,12 +21,77 @@ const VIEWS = [
   { id: 'render', label: '3D', sliceType: SLICE_TYPE.RENDER },
 ]
 
+// Impostazioni applicate a ogni nuova CBCT caricata
+const DEFAULT_VIEW = 'render'
+const DEFAULT_WINDOW = [432, 2340]
+
 // Le CBCT non sono calibrate in Hounsfield: i preset sono relativi alla finestra automatica
 const WINDOW_PRESETS = [
   { id: 'auto', label: 'Auto', range: (lo) => [lo, null] },
   { id: 'bone', label: 'Osso e denti', range: (lo, hi) => [lo + 0.35 * (hi - lo), hi] },
   { id: 'soft', label: 'Tessuti molli', range: (lo, hi) => [lo, lo + 0.5 * (hi - lo)] },
 ]
+
+const WIZARD_STEPS = ['Volume', 'Allineamento mesh', 'Segmentazione']
+const STEP_VOLUME = 0
+const STEP_MESH = 1
+const MESH_FILE_TYPES = '.stl,.ply,.obj'
+// Colore di ogni tipo di oggetto 3D nel visualizzatore (stesso ordine di OBJECT_TYPES)
+const OBJECT_COLORS = [
+  [236, 196, 164], [250, 204, 21], [244, 114, 182], [96, 165, 250], [251, 146, 60], [167, 139, 250],
+  [226, 232, 240], [74, 222, 128], [45, 212, 191], [248, 113, 113], [192, 132, 252], [148, 163, 184], [56, 189, 248],
+]
+const objectColor = (type) => OBJECT_COLORS[Math.max(OBJECT_TYPES.indexOf(type), 0) % OBJECT_COLORS.length]
+
+// Matching STL su DICOM: in alto 3D della CBCT (sinistra) e mesh da sola (destra, canvas separato),
+// in basso le tre slice con il contorno della mesh
+const MATCH_TOP = 0.56
+const MATCH_LAYOUT = [
+  { sliceType: SLICE_TYPE.RENDER, position: [0, 0, 0.5, MATCH_TOP] },
+  { sliceType: SLICE_TYPE.AXIAL, position: [0, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
+  { sliceType: SLICE_TYPE.CORONAL, position: [1 / 3, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
+  { sliceType: SLICE_TYPE.SAGITTAL, position: [2 / 3, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
+]
+const MESH_CONTOUR_MM = 0.6 // spessore della mesh mostrata sulle slice 2D (effetto contorno)
+
+// Applica una matrice 4x4 (righe) ai vertici di una mesh NiiVue
+const transformMesh = (mesh, matrix, gl) => {
+  const p = mesh.pts
+  const [r0, r1, r2] = matrix
+  for (let i = 0; i < p.length; i += 3) {
+    const x = p[i]
+    const y = p[i + 1]
+    const z = p[i + 2]
+    p[i] = r0[0] * x + r0[1] * y + r0[2] * z + r0[3]
+    p[i + 1] = r1[0] * x + r1[1] * y + r1[2] * z + r1[3]
+    p[i + 2] = r2[0] * x + r2[1] * y + r2[2] * z + r2[3]
+  }
+  mesh.updateMesh(gl)
+}
+
+const CROP_IDLE = { active: false, points: [], closed: false, keepInside: false }
+const ORIENT_IDLE = { active: false, rx: 0, ry: 0, rz: 0 }
+const BOX_IDLE = { active: false, changed: false, ...FULL_BOX }
+
+// --- matrici 4x4 per righe (come getVolumeAffine/setVolumeAffine di NiiVue) ---
+const matMul = (a, b) => a.map((row) => b[0].map((_, j) => row.reduce((sum, v, k) => sum + v * b[k][j], 0)))
+const matVec = (m, v) => m.map((row) => row.reduce((sum, x, k) => sum + x * v[k], 0))
+const translation = ([x, y, z]) => [[1, 0, 0, x], [0, 1, 0, y], [0, 0, 1, z], [0, 0, 0, 1]]
+const rotationX = (deg) => {
+  const r = (deg * Math.PI) / 180
+  return [[1, 0, 0, 0], [0, Math.cos(r), -Math.sin(r), 0], [0, Math.sin(r), Math.cos(r), 0], [0, 0, 0, 1]]
+}
+const rotationY = (deg) => {
+  const r = (deg * Math.PI) / 180
+  return [[Math.cos(r), 0, Math.sin(r), 0], [0, 1, 0, 0], [-Math.sin(r), 0, Math.cos(r), 0], [0, 0, 0, 1]]
+}
+const rotationZ = (deg) => {
+  const r = (deg * Math.PI) / 180
+  return [[Math.cos(r), -Math.sin(r), 0, 0], [Math.sin(r), Math.cos(r), 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+}
+// Rotazione attorno al centro del volume, in coordinate RAS (mm)
+const rotationAboutCenter = ({ rx, ry, rz }, center) =>
+  matMul(translation(center), matMul(rotationX(rx), matMul(rotationY(ry), matMul(rotationZ(rz), translation(center.map((c) => -c))))))
 
 const readErrorDetail = async (response) => {
   try {
@@ -28,20 +102,81 @@ const readErrorDetail = async (response) => {
   }
 }
 
+const newProgressId = () => (window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`)
+
+// Scarica il corpo della risposta segnalando la frazione ricevuta (0-1)
+const readBodyWithProgress = async (response, onProgress) => {
+  const total = Number(response.headers.get('Content-Length')) || 0
+  if (!response.body || !total) return response.arrayBuffer()
+  const reader = response.body.getReader()
+  const chunks = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.length
+    onProgress(Math.min(received / total, 1))
+  }
+  const buffer = new Uint8Array(received)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.length
+  }
+  return buffer.buffer
+}
+
+// POST con avanzamento dell'invio (fetch non lo fornisce). Restituisce una Response come fetch.
+const postFormWithProgress = (url, form, onProgress) => new Promise((resolve, reject) => {
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', url)
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable) onProgress(event.loaded / event.total)
+  }
+  xhr.onload = () => resolve(new Response(xhr.responseText, {
+    status: xhr.status,
+    headers: { 'Content-Type': xhr.getResponseHeader('Content-Type') || 'application/json' },
+  }))
+  xhr.onerror = () => reject(new TypeError('Failed to fetch'))
+  xhr.send(form)
+})
+
 export default function CbctPage({ onClose }) {
   const canvasRef = useRef(null)
   const nvRef = useRef(null)
   const folderInputRef = useRef(null)
   const zipInputRef = useRef(null)
   const sessionIdRef = useRef(null)
+  const meshInputRef = useRef(null)
+  const pendingImportRef = useRef(null)
+  const orientBaseRef = useRef(null)
 
   const [serverStatus, setServerStatus] = useState('checking')
   const [loadingMessage, setLoadingMessage] = useState(null)
+  // 0-100, oppure null quando la durata non e' nota (barra indeterminata)
+  const [loadingProgress, setLoadingProgress] = useState(null)
+  const [showAxes, setShowAxes] = useState(true)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
   const [meta, setMeta] = useState(null)
-  const [view, setView] = useState('multi')
+  const [view, setView] = useState(DEFAULT_VIEW)
   const [windowRange, setWindowRange] = useState(null)
   const [useReduced, setUseReduced] = useState(true)
+  const [crop, setCrop] = useState(CROP_IDLE)
+  const [box, setBox] = useState(BOX_IDLE)
+  const [step, setStep] = useState(STEP_VOLUME)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  // Oggetti 3D importati nel passo "Allineamento mesh": { id, type, fileName, color, position, mesh }
+  const [objects, setObjects] = useState([])
+  const [selectedObjectId, setSelectedObjectId] = useState(null)
+  // Matching in corso: { type, fileName, file, buffer, color, method, result, previewMesh }
+  const [matching, setMatching] = useState(null)
+  const [matchingError, setMatchingError] = useState(null)
+  // Nel Matching contrasto e luminosita' sono bloccati finche' l'utente non li riattiva dal tastino
+  const [matchingContrast, setMatchingContrast] = useState(false)
+  const [orient, setOrient] = useState(ORIENT_IDLE)
+  const [speckSize, setSpeckSize] = useState(5)
 
   const isDesktop = typeof window.electron?.selectCbctSource === 'function'
 
@@ -53,9 +188,11 @@ export default function CbctPage({ onClose }) {
       multiplanarShowRender: SHOW_RENDER.ALWAYS,
       multiplanarLayout: MULTIPLANAR_TYPE.GRID,
       loadingText: '',
+      // superfici tagliate dal box di "Riduci volume" mostrate come l'osso, senza colore
+      clipPlaneColor: [0, 0, 0, 0],
     })
     nv.attachToCanvas(canvasRef.current)
-    nv.setSliceType(SLICE_TYPE.MULTIPLANAR)
+    nv.setSliceType(VIEWS.find((v) => v.id === DEFAULT_VIEW).sliceType)
     // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori
     nv.onIntensityChange = (volume) => setWindowRange([volume.cal_min, volume.cal_max])
     nvRef.current = nv
@@ -87,14 +224,24 @@ export default function CbctPage({ onClose }) {
     }
   }
 
+  // Libera il volume temporaneo sul server. Si chiama solo alla chiusura vera (pulsante Chiudi o
+  // finestra chiusa), non nella pulizia di useEffect: l'aggiornamento automatico di Vite in sviluppo
+  // riesegue quella pulizia lasciando la pagina aperta, e il volume sparirebbe dal server.
+  const releaseSession = () => {
+    if (!sessionIdRef.current) return
+    fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${sessionIdRef.current}`), { method: 'DELETE', keepalive: true }).catch(() => {})
+    sessionIdRef.current = null
+  }
+
+  const closePage = () => {
+    releaseSession()
+    onClose()
+  }
+
   useEffect(() => {
     checkServer()
-    return () => {
-      // Libera il volume temporaneo sul server quando si chiude la pagina
-      if (sessionIdRef.current) {
-        fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${sessionIdRef.current}`), { method: 'DELETE' }).catch(() => {})
-      }
-    }
+    window.addEventListener('pagehide', releaseSession)
+    return () => window.removeEventListener('pagehide', releaseSession)
   }, [])
 
   const applyWindow = (low, high) => {
@@ -106,15 +253,61 @@ export default function CbctPage({ onClose }) {
     setWindowRange([low, high])
   }
 
-  const showVolume = async (volumeMeta, reduced, keepWindow = null) => {
-    setLoadingMessage(reduced ? 'Apertura del volume ridotto nel visualizzatore...' : 'Apertura del volume completo nel visualizzatore...')
-    const query = reduced ? '?reduced=true' : ''
+  const startLoading = (message, progress = null) => {
+    setLoadingMessage(message)
+    setLoadingProgress(progress)
+  }
+
+  const stopLoading = () => {
+    setLoadingMessage(null)
+    setLoadingProgress(null)
+  }
+
+  // Interroga il server sull'avanzamento del caricamento e lo riporta nell'intervallo [from, to]
+  const pollServerProgress = (progressId, from, to) => {
+    let stopped = false
+    let timer = null
+    const tick = async () => {
+      try {
+        const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/progress/${progressId}`))
+        const status = response.ok ? await response.json() : null
+        if (!stopped && typeof status?.value === 'number') {
+          setLoadingProgress((current) => Math.max(current ?? 0, from + ((to - from) * status.value) / 100))
+          if (status.message) setLoadingMessage(status.message)
+        }
+      } catch {
+        // il prossimo controllo riprova
+      }
+      if (!stopped) timer = setTimeout(tick, 250)
+    }
+    timer = setTimeout(tick, 150)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }
+
+  // progressRange: parte della barra (0-100) occupata da download e apertura del volume
+  const showVolume = async (volumeMeta, reduced, keepWindow = null, viewId = view, progressRange = [0, 100]) => {
+    const [from, to] = progressRange
+    const openAt = from + (to - from) * 0.9
+    startLoading(reduced ? 'Download del volume ridotto...' : 'Download del volume completo...', from)
+    // version nella query: ogni modifica produce un volume nuovo, niente cache
+    const query = `?v=${volumeMeta.version}${reduced ? '&reduced=true' : ''}`
     const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${volumeMeta.id}/volume.nii${query}`))
     if (!response.ok) throw new Error(await readErrorDetail(response))
-    const buffer = await response.arrayBuffer()
+    const buffer = await readBodyWithProgress(response, (fraction) => setLoadingProgress(from + (openAt - from) * fraction))
 
     const nv = nvRef.current
     if (!nv) return
+    startLoading('Apertura nel visualizzatore 3D...', openAt)
+    // lascia disegnare la barra prima del caricamento sulla GPU, che blocca la pagina
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
+    // Dopo una modifica la vista 3D resta come l'ha lasciata l'utente (rotazione e dimensione
+    // apparente); una CBCT nuova parte invece dalla vista predefinita
+    const camera = keepWindow && nv.volumes.length
+      ? { azimuth: nv.scene.renderAzimuth, elevation: nv.scene.renderElevation, scale: nv.scene.volScaleMultiplier, size: nv.furthestFromPivot }
+      : null
     for (const volume of [...nv.volumes]) nv.removeVolume(volume)
     nv.gl.getError() // azzera eventuali errori precedenti
     await nv.loadFromArrayBuffer(buffer, 'cbct.nii')
@@ -132,9 +325,15 @@ export default function CbctPage({ onClose }) {
     }
 
     setMeta(volumeMeta)
-    const [low, high] = keepWindow || volumeMeta.suggestedWindow
+    const [low, high] = keepWindow || DEFAULT_WINDOW
     applyWindow(low, high)
-    nv.setSliceType(VIEWS.find((v) => v.id === view).sliceType)
+    nv.setSliceType(VIEWS.find((v) => v.id === viewId).sliceType)
+    if (camera) {
+      nv.setRenderAzimuthElevation(camera.azimuth, camera.elevation)
+      // volume ritagliato: senza correzione NiiVue lo ingrandirebbe a tutto schermo
+      if (camera.size > 0 && nv.furthestFromPivot > 0) nv.setScale(camera.scale * (nv.furthestFromPivot / camera.size))
+    }
+    setLoadingProgress(to)
   }
 
   const toggleReduced = async () => {
@@ -153,43 +352,66 @@ export default function CbctPage({ onClose }) {
         // l'errore originale e' gia' mostrato
       }
     } finally {
-      setLoadingMessage(null)
+      stopLoading()
     }
   }
 
-  const runLoad = async (request) => {
+  const describeError = (err) => (err.message === 'Failed to fetch'
+    ? 'Il server CBCT non risponde. Premi "Riprova" in alto.'
+    : err.message)
+
+  // Barra di caricamento: invio file (solo browser) -> lettura DICOM sul server -> download -> apertura.
+  // serverFrom: punto della barra da cui parte il lavoro del server (dopo l'eventuale invio).
+  const SERVER_PROGRESS_END = 75
+
+  const runLoad = async (request, serverFrom = 0) => {
     setError(null)
-    setLoadingMessage('Lettura della serie DICOM...')
+    setNotice(null)
+    setCrop(CROP_IDLE)
+    setOrient(ORIENT_IDLE)
+    closeBox()
+    removeAllObjects()
+    setStep(STEP_VOLUME)
+    startLoading(serverFrom > 0 ? 'Invio dei file al server...' : 'Lettura della serie DICOM...', 0)
+    const progressId = newProgressId()
+    const stopPolling = pollServerProgress(progressId, serverFrom, SERVER_PROGRESS_END)
     try {
-      const response = await request()
+      const response = await request(progressId)
+      stopPolling()
       if (!response.ok) throw new Error(await readErrorDetail(response))
       setUseReduced(true)
-      await showVolume(await response.json(), true)
+      setView(DEFAULT_VIEW)
+      await showVolume(await response.json(), true, null, DEFAULT_VIEW, [SERVER_PROGRESS_END, 100])
     } catch (err) {
-      setError(err.message === 'Failed to fetch'
-        ? 'Il server CBCT non risponde. Premi "Riprova" in alto.'
-        : err.message)
+      setError(describeError(err))
     } finally {
-      setLoadingMessage(null)
+      stopPolling()
+      stopLoading()
     }
   }
 
-  const loadFromPath = (sourcePath) => runLoad(() =>
+  const loadFromPath = (sourcePath) => runLoad((progressId) =>
     fetch(apiUrl(CBCT_SERVER_URL, '/cbct/load-path'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: sourcePath }),
+      body: JSON.stringify({ path: sourcePath, progressId }),
     })
   )
+
+  const UPLOAD_PROGRESS_END = 30
 
   const loadFromFiles = (fileList) => {
     const files = Array.from(fileList || [])
     if (files.length === 0) return
-    runLoad(() => {
+    runLoad((progressId) => {
       const form = new FormData()
       files.forEach((file) => form.append('files', file, file.name))
-      return fetch(apiUrl(CBCT_SERVER_URL, '/cbct/load-upload'), { method: 'POST', body: form })
-    })
+      const url = apiUrl(CBCT_SERVER_URL, `/cbct/load-upload?progressId=${encodeURIComponent(progressId)}`)
+      return postFormWithProgress(url, form, (fraction) => {
+        setLoadingProgress((current) => Math.max(current ?? 0, UPLOAD_PROGRESS_END * fraction))
+        if (fraction >= 1) setLoadingMessage('Lettura della serie DICOM...')
+      })
+    }, UPLOAD_PROGRESS_END)
   }
 
   const openSource = async (kind) => {
@@ -201,6 +423,16 @@ export default function CbctPage({ onClose }) {
     const input = kind === 'zip' ? zipInputRef.current : folderInputRef.current
     input.value = ''
     input.click()
+  }
+
+  // Assi rossi (mirino) nella vista 3D e nelle slice
+  const toggleAxes = () => {
+    const nv = nvRef.current
+    const next = !showAxes
+    setShowAxes(next)
+    if (!nv) return
+    nv.opts.show3Dcrosshair = next
+    nv.setCrosshairWidth(next ? 1 : 0)
   }
 
   const changeView = (viewId) => {
@@ -215,8 +447,317 @@ export default function CbctPage({ onClose }) {
     applyWindow(low, high ?? hi)
   }
 
+  // --- Operazioni del Wizard volume (eseguite dal server sul volume completo) ---
+
+  const applyServerResult = async (next, beforeShow) => {
+    beforeShow?.()
+    if (next.version !== meta.version) await showVolume(next, useReduced, windowRange)
+    else setMeta(next)
+    if (next.summary?.message) setNotice(next.summary.message)
+  }
+
+  // beforeShow: eseguita a operazione riuscita, prima di mostrare il volume nuovo
+  const runOperation = async (op, params, label, beforeShow) => {
+    if (!meta) return false
+    setError(null)
+    setNotice(null)
+    startLoading(label)
+    try {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/ops`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op, params }),
+      })
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      await applyServerResult(await response.json(), beforeShow)
+      return true
+    } catch (err) {
+      setError(describeError(err))
+      return false
+    } finally {
+      stopLoading()
+    }
+  }
+
+  const undo = async () => {
+    if (!meta) return
+    setError(null)
+    setNotice(null)
+    startLoading('Annullamento dell’ultima modifica...')
+    try {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/undo`), { method: 'POST' })
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      await applyServerResult(await response.json())
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      stopLoading()
+    }
+  }
+
+  // Riduci volume (come RealGuide): box con 6 maniglie sulla vista 3D, il volume fuori dal box
+  // si nasconde dal vivo con i piani di taglio di NiiVue; "Riduzione permanente" ritaglia sul server.
+  const updateBox = (next) => {
+    setBox(next)
+    nvRef.current?.setClipPlanes(next.active ? boxClipPlanes(next) : NO_CLIP_PLANES)
+  }
+
+  const closeBox = () => updateBox(BOX_IDLE)
+
+  const toggleBox = () => {
+    if (box.active) {
+      closeBox()
+      return
+    }
+    setNotice(null)
+    changeView('render')
+    updateBox({ ...BOX_IDLE, active: true })
+  }
+
+  const changeBox = ({ min, max }) => updateBox({ active: true, changed: true, min, max })
+
+  const applyBox = async () => {
+    const volume = nvRef.current?.volumes?.[0]
+    if (!volume) return
+    // Il box sparisce prima di caricare il volume ritagliato: il 3D resta come l'ha tagliato l'utente
+    await runOperation('cropBox', { cornersRas: boxCornersMm(volume, box) }, 'Riduzione del volume al box...', closeBox)
+  }
+
+  // Ritaglio: il contorno si disegna sulla vista 3D; il server proietta i voxel con la stessa
+  // matrice di vista usata da NiiVue e rimuove quelli che cadono dentro (o fuori) dal contorno.
+  const startCrop = () => {
+    setNotice(null)
+    changeView('render')
+    setCrop({ ...CROP_IDLE, active: true })
+  }
+
+  const applyCrop = async () => {
+    const nv = nvRef.current
+    const canvas = canvasRef.current
+    const tile = nv?.screenSlices?.find((slice) => slice.axCorSag === SLICE_TYPE.RENDER)
+    if (!tile) {
+      setError('Vista 3D non disponibile: riprova dopo aver selezionato la vista 3D.')
+      return
+    }
+    const viewport = [...tile.leftTopWidthHeight]
+    const [mvp] = nv.calculateMvpMatrix(null, viewport, nv.scene.renderAzimuth, nv.scene.renderElevation)
+    const scale = canvas.width / canvas.getBoundingClientRect().width
+    const ok = await runOperation('crop', {
+      polygon: crop.points.map(([x, y]) => [x * scale, y * scale]),
+      mvp: Array.from(mvp),
+      viewport,
+      canvasSize: [canvas.width, canvas.height],
+      keepInside: crop.keepInside,
+    }, 'Ritaglio del volume...')
+    if (ok) setCrop(CROP_IDLE)
+  }
+
+  // Regola orientamento assi: anteprima dal vivo spostando l'affine del volume in NiiVue,
+  // poi il server ricampiona il volume completo con la stessa matrice.
+  const startOrient = () => {
+    const nv = nvRef.current
+    const volume = nv?.volumes?.[0]
+    if (!volume) return
+    const affine = nv.getVolumeAffine(0).map((row) => [...row])
+    const dims = volume.hdr.dims
+    const center = matVec(affine, [(dims[1] - 1) / 2, (dims[2] - 1) / 2, (dims[3] - 1) / 2, 1]).slice(0, 3)
+    orientBaseRef.current = { affine, center }
+    setNotice(null)
+    setOrient({ ...ORIENT_IDLE, active: true })
+  }
+
+  const changeOrient = (key, value) => {
+    const next = { ...orient, [key]: value }
+    setOrient(next)
+    const base = orientBaseRef.current
+    if (!base) return
+    nvRef.current.setVolumeAffine(0, matMul(rotationAboutCenter(next, base.center), base.affine))
+  }
+
+  const cancelOrient = () => {
+    const base = orientBaseRef.current
+    if (base && nvRef.current?.volumes?.length) nvRef.current.setVolumeAffine(0, base.affine)
+    orientBaseRef.current = null
+    setOrient(ORIENT_IDLE)
+  }
+
+  const applyOrient = async () => {
+    const base = orientBaseRef.current
+    if (!base) return
+    const ok = await runOperation('reorient', { matrix: rotationAboutCenter(orient, base.center) }, 'Applicazione dell’orientamento...')
+    if (ok) {
+      orientBaseRef.current = null
+      setOrient(ORIENT_IDLE)
+    }
+  }
+
+  // --- Passo 2: Allineamento mesh (importazione oggetti 3D) ---
+
+  const goToStep = (index) => {
+    if (index === STEP_MESH) changeView('render')
+    setError(null)
+    setNotice(null)
+    setStep(index)
+  }
+
+  // Pulsanti "Matching" e "Mantieni posizione originale" della finestra Importa oggetto:
+  // funzioni da progettare, chiamate a ogni clic con il tipo di oggetto scelto in quel momento.
+  const onMatchingClick = (objectType) => {
+    // TODO: funzione Matching (da progettare)
+    console.info('Matching selezionato per', objectType)
+  }
+
+  const onOriginalPositionClick = (objectType) => {
+    // TODO: funzione Mantieni posizione originale (da progettare)
+    console.info('Mantieni posizione originale selezionato per', objectType)
+  }
+
+  const confirmImport = (choice) => {
+    pendingImportRef.current = choice
+    setImportDialogOpen(false)
+    // stesso clic dell'utente: il browser permette di aprire la scelta del file
+    meshInputRef.current.value = ''
+    meshInputRef.current.click()
+  }
+
+  const importObjectFile = async (file) => {
+    const choice = pendingImportRef.current
+    pendingImportRef.current = null
+    const nv = nvRef.current
+    if (!file || !choice || !nv) return
+    setError(null)
+    setNotice(null)
+    if (choice.position === POSITION_MATCHING) {
+      await startMatchingTool(file, choice.type)
+      return
+    }
+    startLoading(`Importazione di ${file.name}...`)
+    try {
+      const color = objectColor(choice.type)
+      const mesh = await NVMesh.loadFromFile({ file, gl: nv.gl, name: file.name, rgba255: new Uint8Array([...color, 255]) })
+      nv.addMesh(mesh)
+      const object = { id: mesh.id, type: choice.type, fileName: file.name, color, position: choice.position, mesh }
+      setObjects((current) => [...current, object])
+      setSelectedObjectId(object.id)
+      setNotice(`${choice.type} importato nella posizione originale.`)
+    } catch (err) {
+      setError(`Impossibile leggere ${file.name}: ${err.message || 'formato non supportato'}. Usa un file STL, PLY o OBJ.`)
+    } finally {
+      stopLoading()
+    }
+  }
+
+  // --- Matching STL su DICOM ---
+
+  const startMatchingTool = async (file, type) => {
+    const nv = nvRef.current
+    let buffer
+    try {
+      buffer = await file.arrayBuffer()
+    } catch (err) {
+      setError(`Impossibile leggere ${file.name}: ${err.message}`)
+      return
+    }
+    setMatchingError(null)
+    setMatching({ type, fileName: file.name, file, buffer, color: objectColor(type), method: null, result: null, previewMesh: null })
+    nv.opts.dragMode = DRAG_MODE.none // tasto destro: niente cambi di contrasto
+    setMatchingContrast(false)
+    nv.setSliceType(SLICE_TYPE.MULTIPLANAR)
+    nv.setCustomLayout(MATCH_LAYOUT)
+    nv.setSliceMM(true)
+    nv.setMeshThicknessOn2D(MESH_CONTOUR_MM)
+  }
+
+  const closeMatchingTool = () => {
+    const nv = nvRef.current
+    if (nv) {
+      nv.opts.dragMode = DRAG_MODE.contrast
+      nv.clearCustomLayout()
+      nv.setSliceMM(false)
+      nv.setMeshThicknessOn2D(Infinity)
+      nv.setSliceType(VIEWS.find((v) => v.id === view).sliceType)
+    }
+    setMatching(null)
+    setMatchingError(null)
+    setMatchingContrast(false)
+  }
+
+  const toggleMatchingContrast = () => {
+    const next = !matchingContrast
+    setMatchingContrast(next)
+    if (nvRef.current) nvRef.current.opts.dragMode = next ? DRAG_MODE.contrast : DRAG_MODE.none
+  }
+
+  const runAssistedMatching = async () => {
+    const nv = nvRef.current
+    if (!matching || !meta || !nv) return
+    const current = matching
+    setMatching({ ...current, method: MATCHING_ASSISTED })
+    setMatchingError(null)
+    startLoading('Estrazione denti da volume...', 0)
+    const progressId = newProgressId()
+    const stopPolling = pollServerProgress(progressId, 0, 95)
+    try {
+      const form = new FormData()
+      form.append('mesh', current.file, current.fileName)
+      form.append('boneThreshold', String(windowRange?.[0] ?? DEFAULT_WINDOW[0]))
+      form.append('progressId', progressId)
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/match`), { method: 'POST', body: form })
+      stopPolling()
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      const result = await response.json()
+      startLoading('Posizionamento della mesh sulla CBCT...', 97)
+      // La mesh allineata compare sulla CBCT (3D e contorno sulle slice)
+      if (current.previewMesh) nv.removeMesh(current.previewMesh)
+      const mesh = await NVMesh.readMesh(current.buffer.slice(0), current.fileName, nv.gl, 1, new Uint8Array([...current.color, 255]))
+      transformMesh(mesh, result.matrix, nv.gl)
+      nv.addMesh(mesh)
+      setMatching({ ...current, method: MATCHING_ASSISTED, result, previewMesh: mesh })
+    } catch (err) {
+      setMatchingError(describeError(err))
+    } finally {
+      stopPolling()
+      stopLoading()
+    }
+  }
+
+  const selectPointsMatching = () => {
+    // TODO: Matching "Per Punti" (punti corrispondenti su CBCT e mesh), prossima fase
+    setMatching((m) => ({ ...m, method: MATCHING_POINTS }))
+  }
+
+  const cancelMatching = () => {
+    if (matching?.previewMesh) nvRef.current?.removeMesh(matching.previewMesh)
+    closeMatchingTool()
+  }
+
+  const applyMatching = () => {
+    if (!matching?.result || !matching.previewMesh) return
+    const { type, fileName, color, result, previewMesh } = matching
+    const object = { id: previewMesh.id, type, fileName, color, position: POSITION_MATCHING, matrix: result.matrix, mesh: previewMesh }
+    setObjects((list) => [...list, object])
+    setSelectedObjectId(object.id)
+    closeMatchingTool()
+    setNotice(`${type} allineato alla CBCT (variazione ${result.rms.toFixed(3)} mm).`)
+  }
+
+  const removeObject = (id) => {
+    const object = objects.find((o) => o.id === id)
+    if (object) nvRef.current?.removeMesh(object.mesh)
+    setObjects((current) => current.filter((o) => o.id !== id))
+    if (selectedObjectId === id) setSelectedObjectId(null)
+  }
+
+  const removeAllObjects = () => {
+    for (const object of objects) nvRef.current?.removeMesh(object.mesh)
+    setObjects([])
+    setSelectedObjectId(null)
+  }
+
   const busy = Boolean(loadingMessage)
-  const canLoad = serverStatus === 'online' && !busy
+  const editing = crop.active || orient.active || box.active
+  const canGoToMesh = Boolean(meta) && !busy && !editing
+  const canLoad = serverStatus === 'online' && !busy && !crop.active && !orient.active && !box.active
   const sliderStep = meta && meta.max - meta.min > 100 ? 1 : 0.01
 
   return (
@@ -225,7 +766,7 @@ export default function CbctPage({ onClose }) {
         <div className="mx-auto flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-slate-900">CBCT</h1>
-            <p className="text-sm text-slate-600 mt-1">Carica una CBCT DICOM da cartella o ZIP e visualizzala in 2D e 3D</p>
+            <p className="text-sm text-slate-600 mt-1">Carica una CBCT DICOM da cartella o ZIP e preparala per allineamento e segmentazione</p>
           </div>
           <div className="flex items-center gap-3">
             <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full ${serverStatus === 'online' ? 'bg-emerald-100 text-emerald-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -239,7 +780,7 @@ export default function CbctPage({ onClose }) {
               Riprova
             </button>
             <button
-              onClick={onClose}
+              onClick={closePage}
               className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-700"
             >
               Chiudi
@@ -249,147 +790,177 @@ export default function CbctPage({ onClose }) {
       </div>
 
       <div className="flex-1 min-h-0 flex gap-4 p-4">
-        <aside className="alignment-card border w-72 shrink-0 overflow-y-auto p-4 flex flex-col gap-5">
-          <section>
-            <h2 className="text-sm font-semibold text-slate-900 mb-2">Carica CBCT</h2>
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => openSource('folder')}
-                disabled={!canLoad}
-                className="px-3 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700 disabled:bg-slate-300"
-              >
-                Apri cartella DICOM
-              </button>
-              <button
-                onClick={() => openSource('zip')}
-                disabled={!canLoad}
-                className="px-3 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700 disabled:bg-slate-300"
-              >
-                Apri file ZIP
-              </button>
-            </div>
-            <input
-              ref={folderInputRef}
-              type="file"
-              webkitdirectory=""
-              multiple
-              className="hidden"
-              onChange={(e) => loadFromFiles(e.target.files)}
+        {matching && (
+          <aside className="alignment-card border w-80 shrink-0 flex flex-col min-h-0">
+            <CbctMatchingPanel
+              matching={matching}
+              busy={busy}
+              error={matchingError}
+              onAssisted={runAssistedMatching}
+              onPoints={selectPointsMatching}
+              onCancel={cancelMatching}
+              onApply={applyMatching}
             />
+          </aside>
+        )}
+        <aside className={`alignment-card border w-80 shrink-0 flex flex-col min-h-0 ${matching ? 'hidden' : ''}`}>
+          <div className="px-4 pt-4 pb-3 border-b border-slate-200">
+            <h2 className="text-base font-semibold text-slate-900">Wizard volume</h2>
+            <ol className="flex gap-1 mt-2">
+              {WIZARD_STEPS.map((label, index) => {
+                const enabled = index === step || (index === STEP_VOLUME && !busy) || (index === STEP_MESH && canGoToMesh)
+                return (
+                  <li key={label} className="flex-1">
+                    <button
+                      onClick={() => goToStep(index)}
+                      disabled={!enabled || index === step}
+                      aria-current={index === step ? 'step' : undefined}
+                      title={index > STEP_MESH ? 'Prossima fase in sviluppo' : undefined}
+                      className={`w-full h-full text-center text-[11px] leading-tight px-1 py-1 rounded transition-colors ${index === step ? 'bg-sky-600 text-white' : enabled ? 'bg-slate-100 text-slate-700 hover:bg-sky-100' : 'bg-slate-100 text-slate-400'}`}
+                    >
+                      {index + 1}. {label}
+                    </button>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-5">
             <input
-              ref={zipInputRef}
+              ref={meshInputRef}
               type="file"
-              accept=".zip"
+              accept={MESH_FILE_TYPES}
               className="hidden"
-              onChange={(e) => loadFromFiles(e.target.files)}
+              onChange={(e) => importObjectFile(e.target.files?.[0])}
             />
-            <p className="text-xs text-slate-500 mt-2">I file originali non vengono modificati.</p>
-          </section>
-
-          {error && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
-          )}
-
-          {meta && (
-            <>
-              {meta.reduced && (
-                <section>
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-sm font-semibold text-slate-900">Riduci volume</h2>
-                    <button
-                      role="switch"
-                      aria-checked={useReduced}
-                      onClick={toggleReduced}
-                      disabled={busy}
-                      className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 ${useReduced ? 'bg-sky-600' : 'bg-slate-300'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${useReduced ? 'translate-x-5' : ''}`} />
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {useReduced
-                      ? `Visualizzazione a ${meta.reduced.spacing[0]} mm (${meta.reduced.size.join(' × ')}). Il volume completo resta disponibile per le elaborazioni.`
-                      : `Volume completo a ${meta.spacing[0]} mm: richiede molta memoria video e può essere lento.`}
-                  </p>
-                </section>
-              )}
-
-              <section>
-                <h2 className="text-sm font-semibold text-slate-900 mb-2">Vista</h2>
-                <div className="grid grid-cols-2 gap-2">
-                  {VIEWS.map((v) => (
-                    <button
-                      key={v.id}
-                      onClick={() => changeView(v.id)}
-                      className={`px-2 py-1.5 rounded-lg text-sm border ${view === v.id ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-700 hover:bg-slate-100'}`}
-                    >
-                      {v.label}
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section>
-                <h2 className="text-sm font-semibold text-slate-900 mb-2">Contrasto</h2>
-                <div className="flex gap-2 mb-3 flex-wrap">
-                  {WINDOW_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => applyPreset(preset)}
-                      className="px-2 py-1 rounded-lg text-xs border border-slate-300 text-slate-700 hover:bg-slate-100"
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-                {windowRange && (
-                  <div className="flex flex-col gap-2 text-xs text-slate-600">
-                    <label className="flex flex-col gap-1">
-                      <span>Minimo: {Math.round(windowRange[0])}</span>
-                      <input
-                        type="range"
-                        min={meta.min}
-                        max={meta.max}
-                        step={sliderStep}
-                        value={windowRange[0]}
-                        onChange={(e) => applyWindow(Math.min(Number(e.target.value), windowRange[1] - sliderStep), windowRange[1])}
-                      />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                      <span>Massimo: {Math.round(windowRange[1])}</span>
-                      <input
-                        type="range"
-                        min={meta.min}
-                        max={meta.max}
-                        step={sliderStep}
-                        value={windowRange[1]}
-                        onChange={(e) => applyWindow(windowRange[0], Math.max(Number(e.target.value), windowRange[0] + sliderStep))}
-                      />
-                    </label>
-                  </div>
+            {step === STEP_MESH ? (
+              <>
+                {error && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
                 )}
-              </section>
+                {notice && !error && (
+                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">{notice}</div>
+                )}
+                <CbctMeshStep
+                  busy={busy}
+                  objects={objects}
+                  selectedId={selectedObjectId}
+                  onSelect={setSelectedObjectId}
+                  onImport={() => setImportDialogOpen(true)}
+                  onRemove={removeObject}
+                />
+              </>
+            ) : (
+            <>
+            <section>
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">Carica CBCT</h2>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => openSource('folder')}
+                  disabled={!canLoad}
+                  className="px-3 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700 disabled:bg-slate-300"
+                >
+                  Cartella DICOM
+                </button>
+                <button
+                  onClick={() => openSource('zip')}
+                  disabled={!canLoad}
+                  className="px-3 py-2 bg-sky-600 text-white rounded-lg text-sm hover:bg-sky-700 disabled:bg-slate-300"
+                >
+                  File ZIP
+                </button>
+              </div>
+              <input
+                ref={folderInputRef}
+                type="file"
+                webkitdirectory=""
+                multiple
+                className="hidden"
+                onChange={(e) => loadFromFiles(e.target.files)}
+              />
+              <input
+                ref={zipInputRef}
+                type="file"
+                accept=".zip"
+                className="hidden"
+                onChange={(e) => loadFromFiles(e.target.files)}
+              />
+              <p className="text-xs text-slate-500 mt-2">Si carica solo la serie assiale originale. I file originali non vengono modificati.</p>
+            </section>
 
-              <section>
-                <h2 className="text-sm font-semibold text-slate-900 mb-2">Informazioni volume</h2>
-                <dl className="text-xs text-slate-600 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                  <dt>Dimensioni</dt><dd>{meta.size.join(' × ')} voxel</dd>
-                  <dt>Voxel</dt><dd>{meta.spacing.join(' × ')} mm</dd>
-                  <dt>Campo</dt><dd>{meta.physicalSizeMm.join(' × ')} mm</dd>
-                  <dt>File</dt><dd>{meta.fileCount}{meta.seriesCount > 1 ? ` (serie più grande di ${meta.seriesCount})` : ''}</dd>
-                  {meta.modality && (<><dt>Modalità</dt><dd>{meta.modality}</dd></>)}
-                  {meta.manufacturer && (<><dt>Produttore</dt><dd>{meta.manufacturer}{meta.model ? ` ${meta.model}` : ''}</dd></>)}
-                  {meta.seriesDescription && (<><dt>Serie</dt><dd>{meta.seriesDescription}</dd></>)}
-                </dl>
-              </section>
+            {error && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
+            )}
+            {notice && !error && (
+              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">{notice}</div>
+            )}
+
+            {meta && (
+              <CbctVolumeWizard
+                meta={meta}
+                busy={busy}
+                box={box}
+                onBoxToggle={toggleBox}
+                onBoxApply={applyBox}
+                onOperation={runOperation}
+                onUndo={undo}
+                crop={crop}
+                onCropStart={startCrop}
+                onCropInvert={() => setCrop((c) => ({ ...c, keepInside: !c.keepInside }))}
+                onCropApply={applyCrop}
+                onCropCancel={() => setCrop(CROP_IDLE)}
+                orient={orient}
+                onOrientStart={startOrient}
+                onOrientChange={changeOrient}
+                onOrientApply={applyOrient}
+                onOrientCancel={cancelOrient}
+                speckSize={speckSize}
+                onSpeckSizeChange={setSpeckSize}
+                speckThreshold={windowRange ? windowRange[0] : null}
+              />
+            )}
             </>
-          )}
+            )}
+          </div>
+
+          <div className="p-3 border-t border-slate-200 grid grid-cols-2 gap-2">
+            <button
+              onClick={() => goToStep(step - 1)}
+              disabled={step === STEP_VOLUME || busy}
+              className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              Passo precedente
+            </button>
+            <button
+              onClick={() => goToStep(step + 1)}
+              disabled={step !== STEP_VOLUME || !canGoToMesh}
+              title={step === STEP_MESH ? 'Segmentazione: prossima fase in sviluppo' : undefined}
+              className="px-3 py-2 rounded-lg text-sm bg-sky-600 text-white hover:bg-sky-700 disabled:bg-slate-300"
+            >
+              Passo successivo
+            </button>
+          </div>
         </aside>
 
         <section className="alignment-card border flex-1 min-w-0 relative overflow-hidden">
           <div className="alignment-viewer-stage absolute inset-0">
             <canvas ref={canvasRef} className="w-full h-full block" />
           </div>
+          {box.active && !busy && (
+            <CbctBoxOverlay nvRef={nvRef} canvasRef={canvasRef} box={box} onChange={changeBox} />
+          )}
+          {crop.active && (
+            <CbctCropOverlay
+              points={crop.points}
+              closed={crop.closed}
+              keepInside={crop.keepInside}
+              onAddPoint={(point) => setCrop((c) => ({ ...c, points: [...c.points, point] }))}
+              onRemoveLastPoint={() => setCrop((c) => ({ ...c, closed: false, points: c.points.slice(0, -1) }))}
+              onClose={() => setCrop((c) => (c.points.length >= 3 ? { ...c, closed: true } : c))}
+              onCancel={() => setCrop(CROP_IDLE)}
+            />
+          )}
           {!meta && !busy && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-white/80 pointer-events-none">
               <div className="text-4xl mb-3" aria-hidden="true">◫</div>
@@ -397,17 +968,136 @@ export default function CbctPage({ onClose }) {
               <p className="text-sm text-white/60">Apri una cartella DICOM o un file ZIP dal pannello a sinistra.</p>
             </div>
           )}
-          {busy && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
-              <div className="px-5 py-3 rounded-lg bg-slate-900/90 text-sm">⏳ {loadingMessage}</div>
+          {matching && (
+            <div
+              className="absolute right-0 top-0 w-1/2 border-l border-b border-slate-700/60"
+              style={{ height: `${MATCH_TOP * 100}%` }}
+            >
+              <CbctMeshPreview buffer={matching.buffer} fileName={matching.fileName} color={matching.color} />
+              <span className="absolute top-2 left-3 text-xs text-white/70 pointer-events-none">{matching.type}</span>
             </div>
+          )}
+          {matching && !busy && (
+            <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-2">
+              <button
+                onClick={toggleMatchingContrast}
+                aria-pressed={matchingContrast}
+                aria-label={matchingContrast ? 'Disattiva contrasto e luminosità' : 'Attiva contrasto e luminosità'}
+                title={matchingContrast ? 'Disattiva contrasto e luminosità' : 'Attiva contrasto e luminosità'}
+                className={`w-9 h-9 flex items-center justify-center rounded-lg border backdrop-blur transition-colors ${matchingContrast ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900/60 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
+              >
+                <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
+                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                  <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
+                  {!matchingContrast && <path d="M3.5 16.5L16.5 3.5" stroke="currentColor" strokeWidth="1.6" />}
+                </svg>
+              </button>
+              {matchingContrast && meta && (
+                <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
+                  <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità</p>
+                  <CbctContrastControls
+                    meta={meta}
+                    presets={WINDOW_PRESETS}
+                    windowRange={windowRange}
+                    step={sliderStep}
+                    onPreset={applyPreset}
+                    onWindow={applyWindow}
+                  />
+                  <p className="text-[11px] text-slate-500 mt-2">Anche col tasto destro trascinato sulla CBCT.</p>
+                </div>
+              )}
+            </div>
+          )}
+          {meta && !busy && !matching && (
+            <button
+              onClick={toggleAxes}
+              aria-pressed={showAxes}
+              title={showAxes ? 'Nascondi gli assi rossi' : 'Mostra gli assi rossi'}
+              className={`absolute top-3 right-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border backdrop-blur transition-colors ${showAxes ? 'bg-slate-900/70 border-red-400/60 text-white hover:bg-slate-800/80' : 'bg-slate-900/50 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
+            >
+              <svg viewBox="0 0 20 20" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                <path d="M10 2v16M2 10h16" className={showAxes ? 'text-red-400' : ''} stroke="currentColor" />
+                <circle cx="10" cy="10" r="3.5" />
+                {!showAxes && <path d="M3 17L17 3" />}
+              </svg>
+              {showAxes ? 'Nascondi assi' : 'Mostra assi'}
+            </button>
+          )}
+          {busy && <CbctLoadingProgress message={loadingMessage} progress={loadingProgress} />}
+          {importDialogOpen && (
+            <CbctImportObjectDialog
+              onConfirm={confirmImport}
+              onCancel={() => setImportDialogOpen(false)}
+              onMatchingClick={onMatchingClick}
+              onOriginalPositionClick={onOriginalPositionClick}
+            />
           )}
           {meta && (
             <div className="absolute bottom-2 left-3 text-xs text-white/70 pointer-events-none">
-              Clic per spostare il cursore · Rotella per scorrere le slice · Tasto destro trascinato per il contrasto
+              {crop.active
+                ? 'Ritaglio: clic per aggiungere punti · doppio clic per chiudere · Esc per annullare'
+                : 'Clic per spostare il cursore · Rotella per scorrere le slice · Tasto destro trascinato per il contrasto'}
             </div>
           )}
         </section>
+
+        {meta && !matching && (
+          <aside className="alignment-card border w-64 shrink-0 overflow-y-auto p-4 flex flex-col gap-5">
+            <section>
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">Vista</h2>
+              <div className="grid grid-cols-2 gap-2">
+                {VIEWS.map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => changeView(v.id)}
+                    disabled={crop.active}
+                    className={`px-2 py-1.5 rounded-lg text-sm border disabled:opacity-40 ${view === v.id ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-300 text-slate-700 hover:bg-slate-100'}`}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+              {meta.reduced && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-700">Visualizzazione leggera</span>
+                    <Switch checked={useReduced} onChange={toggleReduced} disabled={busy || crop.active || orient.active} />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    {useReduced
+                      ? `Mostra una copia a ${meta.reduced.spacing[0]} mm per non saturare la scheda video. Le modifiche usano sempre il volume completo.`
+                      : `Volume completo a ${meta.spacing[0]} mm: richiede molta memoria video e può essere lento.`}
+                  </p>
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">Contrasto</h2>
+              <CbctContrastControls
+                meta={meta}
+                presets={WINDOW_PRESETS}
+                windowRange={windowRange}
+                step={sliderStep}
+                onPreset={applyPreset}
+                onWindow={applyWindow}
+              />
+            </section>
+
+            <section>
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">Informazioni volume</h2>
+              <dl className="text-xs text-slate-600 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                <dt>Dimensioni</dt><dd>{meta.size.join(' × ')} voxel</dd>
+                <dt>Voxel</dt><dd>{meta.spacing.join(' × ')} mm</dd>
+                <dt>Campo</dt><dd>{meta.physicalSizeMm.join(' × ')} mm</dd>
+                <dt>File</dt><dd>{meta.fileCount}{meta.seriesCount > 1 ? ` (1 di ${meta.seriesCount} serie)` : ''}</dd>
+                {meta.modality && (<><dt>Modalità</dt><dd>{meta.modality}</dd></>)}
+                {meta.manufacturer && (<><dt>Produttore</dt><dd>{meta.manufacturer}{meta.model ? ` ${meta.model}` : ''}</dd></>)}
+                {meta.seriesDescription && (<><dt>Serie</dt><dd>{meta.seriesDescription}</dd></>)}
+              </dl>
+            </section>
+          </aside>
+        )}
       </div>
     </div>
   )

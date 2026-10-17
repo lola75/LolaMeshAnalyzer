@@ -5,3 +5,5 @@ uvicorn==0.49.0
 python-multipart==0.0.32
 numpy==2.4.6
 SimpleITK==2.5.6
+# Matching STL su DICOM (allineamento mesh - CBCT): RANSAC + FPFH e ICP
+open3d==0.19.0

@@ -519,3 +519,37 @@ button:focus-visible {
     justify-content: flex-start;
   }
 }
+
+/* Barra di avanzamento CBCT */
+.cbct-progress-fill {
+  background: linear-gradient(90deg, #0284c7, #38bdf8, #22d3ee, #38bdf8, #0284c7);
+  background-size: 200% 100%;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+  animation: cbct-progress-flow 1.6s linear infinite;
+}
+
+.cbct-progress-indeterminate {
+  background: linear-gradient(90deg, transparent, #38bdf8, #22d3ee, transparent);
+  animation: cbct-progress-slide 1.3s ease-in-out infinite;
+}
+
+@keyframes cbct-progress-flow {
+  from { background-position: 200% 0; }
+  to { background-position: 0 0; }
+}
+
+@keyframes cbct-progress-slide {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cbct-progress-fill,
+  .cbct-progress-indeterminate {
+    animation: none;
+  }
+
+  .cbct-progress-indeterminate {
+    left: 33%;
+  }
+}
