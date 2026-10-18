@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Niivue, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
 import { apiUrl, checkServerHealth } from '../utils/meshLibBackend'
+import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
 import CbctVolumeWizard, { Switch } from './CbctVolumeWizard'
 import CbctBoxOverlay, { FULL_BOX, NO_CLIP_PLANES, boxClipPlanes, boxCornersMm } from './CbctBoxOverlay'
 import CbctCropOverlay from './CbctCropOverlay'
@@ -10,6 +11,9 @@ import CbctImportObjectDialog, { OBJECT_TYPES, POSITION_MATCHING } from './CbctI
 import CbctMatchingPanel, { MATCHING_ASSISTED, MATCHING_POINTS } from './CbctMatchingPanel'
 import CbctMeshPreview from './CbctMeshPreview'
 import CbctContrastControls from './CbctContrastControls'
+import MeshModifier from './MeshModifier'
+import * as THREE from 'three'
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 const CBCT_SERVER_URL = 'http://127.0.0.1:8002'
 
@@ -53,6 +57,37 @@ const MATCH_LAYOUT = [
   { sliceType: SLICE_TYPE.SAGITTAL, position: [2 / 3, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
 ]
 const MESH_CONTOUR_MM = 0.6 // spessore della mesh mostrata sulle slice 2D (effetto contorno)
+
+const IDENTITY = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+
+// Mesh NiiVue -> geometria three.js per il Modificatore mesh (stesse coordinate: quelle nella CBCT)
+const meshToGeometry = (mesh) => {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mesh.pts), 3))
+  geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(mesh.tris), 1))
+  geometry.computeVertexNormals()
+  geometry.computeBoundingBox()
+  return geometry
+}
+
+// Geometria three.js -> vertici e triangoli per NiiVue. Le geometrie da STL non hanno indici:
+// si uniscono i vertici coincidenti (senza normali, che li renderebbero diversi) per l'ombreggiatura liscia.
+const geometryToMeshData = (geometry) => {
+  let source = geometry
+  if (!source.index) {
+    source = new THREE.BufferGeometry()
+    source.setAttribute('position', geometry.getAttribute('position').clone())
+    source = mergeVertices(source, 1e-5)
+  }
+  const position = source.getAttribute('position')
+  const pts = new Float32Array(position.count * 3)
+  for (let i = 0; i < position.count; i++) {
+    pts[i * 3] = position.getX(i)
+    pts[i * 3 + 1] = position.getY(i)
+    pts[i * 3 + 2] = position.getZ(i)
+  }
+  return { pts, tris: new Uint32Array(source.index.array) }
+}
 
 // Applica una matrice 4x4 (righe) ai vertici di una mesh NiiVue
 const transformMesh = (mesh, matrix, gl) => {
@@ -157,6 +192,8 @@ export default function CbctPage({ onClose }) {
   // 0-100, oppure null quando la durata non e' nota (barra indeterminata)
   const [loadingProgress, setLoadingProgress] = useState(null)
   const [showAxes, setShowAxes] = useState(true)
+  // Volume CBCT nascosto dal rendering (restano visibili gli oggetti 3D importati)
+  const [volumeVisible, setVolumeVisible] = useState(true)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const [meta, setMeta] = useState(null)
@@ -175,6 +212,8 @@ export default function CbctPage({ onClose }) {
   const [matchingError, setMatchingError] = useState(null)
   // Nel Matching contrasto e luminosita' sono bloccati finche' l'utente non li riattiva dal tastino
   const [matchingContrast, setMatchingContrast] = useState(false)
+  // Oggetto aperto nel Modificatore mesh: { id, geometry }
+  const [editingObject, setEditingObject] = useState(null)
   const [orient, setOrient] = useState(ORIENT_IDLE)
   const [speckSize, setSpeckSize] = useState(5)
 
@@ -196,7 +235,9 @@ export default function CbctPage({ onClose }) {
     // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori
     nv.onIntensityChange = (volume) => setWindowRange([volume.cal_min, volume.cal_max])
     nvRef.current = nv
+    const detachWheelZoom = attachRenderWheelZoom(nv, canvasRef.current)
     return () => {
+      detachWheelZoom()
       nvRef.current = null
       try {
         nv.cleanup()
@@ -333,6 +374,7 @@ export default function CbctPage({ onClose }) {
       // volume ritagliato: senza correzione NiiVue lo ingrandirebbe a tutto schermo
       if (camera.size > 0 && nv.furthestFromPivot > 0) nv.setScale(camera.scale * (nv.furthestFromPivot / camera.size))
     }
+    if (!volumeVisible && keepWindow) nv.setOpacity(0, 0)
     setLoadingProgress(to)
   }
 
@@ -372,6 +414,7 @@ export default function CbctPage({ onClose }) {
     closeBox()
     removeAllObjects()
     setStep(STEP_VOLUME)
+    setVolumeVisible(true)
     startLoading(serverFrom > 0 ? 'Invio dei file al server...' : 'Lettura della serie DICOM...', 0)
     const progressId = newProgressId()
     const stopPolling = pollServerProgress(progressId, serverFrom, SERVER_PROGRESS_END)
@@ -433,6 +476,12 @@ export default function CbctPage({ onClose }) {
     if (!nv) return
     nv.opts.show3Dcrosshair = next
     nv.setCrosshairWidth(next ? 1 : 0)
+  }
+
+  const toggleVolumeVisible = () => {
+    const next = !volumeVisible
+    setVolumeVisible(next)
+    if (nvRef.current?.volumes?.length) nvRef.current.setOpacity(0, next ? 1 : 0)
   }
 
   const changeView = (viewId) => {
@@ -631,15 +680,22 @@ export default function CbctPage({ onClose }) {
       await startMatchingTool(file, choice.type)
       return
     }
+    // Oggetto di riferimento scelto nel menu: il nuovo oggetto riceve il suo stesso spostamento
+    // (es. antagonista o ceratura dallo stesso scanner dell'Anatomy gia' allineata)
+    const reference = objects.find((o) => String(o.id) === choice.referenceId)
     startLoading(`Importazione di ${file.name}...`)
     try {
       const color = objectColor(choice.type)
+      const matrix = reference ? reference.matrix : IDENTITY
       const mesh = await NVMesh.loadFromFile({ file, gl: nv.gl, name: file.name, rgba255: new Uint8Array([...color, 255]) })
+      if (reference) transformMesh(mesh, matrix, nv.gl)
       nv.addMesh(mesh)
-      const object = { id: mesh.id, type: choice.type, fileName: file.name, color, position: choice.position, mesh }
+      const object = { id: mesh.id, type: choice.type, fileName: file.name, color, position: choice.position, matrix, mesh, visible: true }
       setObjects((current) => [...current, object])
       setSelectedObjectId(object.id)
-      setNotice(`${choice.type} importato nella posizione originale.`)
+      setNotice(reference
+        ? `${choice.type} importato nella posizione di ${reference.type}.`
+        : `${choice.type} importato nella posizione originale.`)
     } catch (err) {
       setError(`Impossibile leggere ${file.name}: ${err.message || 'formato non supportato'}. Usa un file STL, PLY o OBJ.`)
     } finally {
@@ -660,6 +716,11 @@ export default function CbctPage({ onClose }) {
     }
     setMatchingError(null)
     setMatching({ type, fileName: file.name, file, buffer, color: objectColor(type), method: null, result: null, previewMesh: null })
+    // Il Matching si fa guardando la CBCT: se era nascosta torna visibile
+    if (!volumeVisible) {
+      nv.setOpacity(0, 1)
+      setVolumeVisible(true)
+    }
     nv.opts.dragMode = DRAG_MODE.none // tasto destro: niente cambi di contrasto
     setMatchingContrast(false)
     nv.setSliceType(SLICE_TYPE.MULTIPLANAR)
@@ -734,11 +795,47 @@ export default function CbctPage({ onClose }) {
   const applyMatching = () => {
     if (!matching?.result || !matching.previewMesh) return
     const { type, fileName, color, result, previewMesh } = matching
-    const object = { id: previewMesh.id, type, fileName, color, position: POSITION_MATCHING, matrix: result.matrix, mesh: previewMesh }
+    const object = { id: previewMesh.id, type, fileName, color, position: POSITION_MATCHING, matrix: result.matrix, mesh: previewMesh, visible: true }
     setObjects((list) => [...list, object])
     setSelectedObjectId(object.id)
     closeMatchingTool()
     setNotice(`${type} allineato alla CBCT (variazione ${result.rms.toFixed(3)} mm).`)
+  }
+
+  // Spunta nella lista "Oggetti 3D": mostra/nasconde la mesh nel 3D e nelle slice
+  const toggleObjectVisible = (id) => {
+    const object = objects.find((o) => o.id === id)
+    if (!object) return
+    const visible = !object.visible
+    nvRef.current?.setMeshProperty(object.mesh.id, 'visible', visible)
+    setObjects((list) => list.map((o) => (o.id === id ? { ...o, visible } : o)))
+  }
+
+  // Modifica di un oggetto con il Modificatore mesh: la geometria entra e torna nelle coordinate
+  // della CBCT, quindi l'oggetto resta dov'e' (nome, colore, visibilita' e spostamento invariati)
+  const editObject = (id) => {
+    const object = objects.find((o) => o.id === id)
+    if (!object) return
+    setSelectedObjectId(id)
+    setEditingObject({ id, geometry: meshToGeometry(object.mesh) })
+  }
+
+  const applyObjectEdit = (geometry) => {
+    const nv = nvRef.current
+    const object = objects.find((o) => o.id === editingObject?.id)
+    setEditingObject(null)
+    if (!nv || !object) return
+    try {
+      const { pts, tris } = geometryToMeshData(geometry)
+      if (tris.length < 3) throw new Error('la mesh modificata è vuota')
+      const mesh = new NVMesh(pts, tris, object.fileName, new Uint8Array([...object.color, 255]), 1, object.visible, nv.gl)
+      nv.removeMesh(object.mesh)
+      nv.addMesh(mesh)
+      setObjects((list) => list.map((o) => (o.id === object.id ? { ...o, mesh, edited: true } : o)))
+      setNotice(`${object.type} modificato.`)
+    } catch (err) {
+      setError(`Modifica di ${object.type} non applicata: ${err.message}`)
+    }
   }
 
   const removeObject = (id) => {
@@ -849,6 +946,8 @@ export default function CbctPage({ onClose }) {
                   onSelect={setSelectedObjectId}
                   onImport={() => setImportDialogOpen(true)}
                   onRemove={removeObject}
+                  onToggleVisible={toggleObjectVisible}
+                  onEdit={editObject}
                 />
               </>
             ) : (
@@ -1009,11 +1108,25 @@ export default function CbctPage({ onClose }) {
             </div>
           )}
           {meta && !busy && !matching && (
+            <div className="absolute top-3 right-3 z-10 flex gap-2">
+            <button
+              onClick={toggleVolumeVisible}
+              aria-pressed={!volumeVisible}
+              title={volumeVisible ? 'Nascondi il volume CBCT dal rendering' : 'Mostra il volume CBCT'}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border backdrop-blur transition-colors ${volumeVisible ? 'bg-slate-900/70 border-amber-300/60 text-white hover:bg-slate-800/80' : 'bg-slate-900/50 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
+            >
+              <svg viewBox="0 0 20 20" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                <path d="M10 2.5l6.5 3.5v8L10 17.5 3.5 14V6z" className={volumeVisible ? 'text-amber-300' : ''} stroke="currentColor" />
+                <path d="M3.5 6L10 9.5l6.5-3.5M10 9.5v8" />
+                {!volumeVisible && <path d="M3 17L17 3" />}
+              </svg>
+              {volumeVisible ? 'Nascondi volume' : 'Mostra volume'}
+            </button>
             <button
               onClick={toggleAxes}
               aria-pressed={showAxes}
               title={showAxes ? 'Nascondi gli assi rossi' : 'Mostra gli assi rossi'}
-              className={`absolute top-3 right-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border backdrop-blur transition-colors ${showAxes ? 'bg-slate-900/70 border-red-400/60 text-white hover:bg-slate-800/80' : 'bg-slate-900/50 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border backdrop-blur transition-colors ${showAxes ? 'bg-slate-900/70 border-red-400/60 text-white hover:bg-slate-800/80' : 'bg-slate-900/50 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
             >
               <svg viewBox="0 0 20 20" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
                 <path d="M10 2v16M2 10h16" className={showAxes ? 'text-red-400' : ''} stroke="currentColor" />
@@ -1022,10 +1135,12 @@ export default function CbctPage({ onClose }) {
               </svg>
               {showAxes ? 'Nascondi assi' : 'Mostra assi'}
             </button>
+            </div>
           )}
           {busy && <CbctLoadingProgress message={loadingMessage} progress={loadingProgress} />}
           {importDialogOpen && (
             <CbctImportObjectDialog
+              objects={objects}
               onConfirm={confirmImport}
               onCancel={() => setImportDialogOpen(false)}
               onMatchingClick={onMatchingClick}
@@ -1036,7 +1151,7 @@ export default function CbctPage({ onClose }) {
             <div className="absolute bottom-2 left-3 text-xs text-white/70 pointer-events-none">
               {crop.active
                 ? 'Ritaglio: clic per aggiungere punti · doppio clic per chiudere · Esc per annullare'
-                : 'Clic per spostare il cursore · Rotella per scorrere le slice · Tasto destro trascinato per il contrasto'}
+                : 'Clic per spostare il cursore · Rotella: zoom sul 3D, scorrimento sulle slice · Tasto destro trascinato per il contrasto'}
             </div>
           )}
         </section>
@@ -1099,6 +1214,15 @@ export default function CbctPage({ onClose }) {
           </aside>
         )}
       </div>
+
+      {editingObject && (
+        <MeshModifier
+          geometry={editingObject.geometry}
+          onClose={() => setEditingObject(null)}
+          onApply={applyObjectEdit}
+          requireEditConsent={false}
+        />
+      )}
     </div>
   )
 }

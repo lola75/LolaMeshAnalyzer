@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react'
 import { Niivue, NVMesh, SLICE_TYPE } from '@niivue/niivue'
+import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
 
 // Visualizzatore 3D di una sola mesh (vista destra del Matching e anteprima nel pannello).
 // buffer: contenuto del file STL/PLY/OBJ; il formato si ricava da fileName.
@@ -15,6 +16,7 @@ export default function CbctMeshPreview({ buffer, fileName, color, backColor = D
     nv.attachToCanvas(canvasRef.current)
     nv.setSliceType(SLICE_TYPE.RENDER)
     if (!interactive) nv.opts.dragMode = 0
+    const detachWheelZoom = interactive ? attachRenderWheelZoom(nv, canvasRef.current) : () => {}
     NVMesh.readMesh(buffer.slice(0), fileName, nv.gl, 1, new Uint8Array([...color, 255]))
       .then((mesh) => {
         if (cancelled) return
@@ -24,6 +26,7 @@ export default function CbctMeshPreview({ buffer, fileName, color, backColor = D
       .catch((err) => console.warn('Anteprima mesh non riuscita:', err))
     return () => {
       cancelled = true
+      detachWheelZoom()
       try {
         nv.cleanup()
       } catch {

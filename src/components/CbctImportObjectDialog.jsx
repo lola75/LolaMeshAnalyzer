@@ -27,10 +27,13 @@ const choiceButton = (selected) => `flex-1 px-3 py-2 rounded-lg text-sm font-med
 }`
 
 // Finestra "Importa oggetto": tipo di oggetto e posizionamento, poi OK apre la scelta del file.
-// onMatchingClick / onOriginalPositionClick: chiamate a ogni clic sul pulsante corrispondente
-export default function CbctImportObjectDialog({ onConfirm, onCancel, onMatchingClick, onOriginalPositionClick }) {
+// onMatchingClick / onOriginalPositionClick: chiamate a ogni clic sul pulsante corrispondente.
+// objects: oggetti gia' importati; sceglierne uno nel menu fa prendere al nuovo oggetto la stessa
+// posizione (stesso spostamento) di quell'oggetto.
+export default function CbctImportObjectDialog({ objects = [], onConfirm, onCancel, onMatchingClick, onOriginalPositionClick }) {
   const [type, setType] = useState(OBJECT_TYPES[0])
   const [position, setPosition] = useState(POSITION_MATCHING)
+  const [referenceId, setReferenceId] = useState('')
 
   useEffect(() => {
     const onKey = (event) => {
@@ -76,6 +79,7 @@ export default function CbctImportObjectDialog({ onConfirm, onCancel, onMatching
                 className={choiceButton(position === POSITION_MATCHING)}
                 onClick={() => {
                   setPosition(POSITION_MATCHING)
+                  setReferenceId('') // Matching e "posizione di un altro oggetto" sono alternativi
                   onMatchingClick?.(type)
                 }}
               >
@@ -92,13 +96,23 @@ export default function CbctImportObjectDialog({ onConfirm, onCancel, onMatching
               >
                 Mantieni posizione originale
               </button>
-              {/* Menu ancora vuoto: le opzioni arriveranno con le prossime funzioni */}
               <select
-                aria-label="Opzioni posizione"
-                className="flex-1 min-w-0 px-2 py-2 rounded-lg border border-slate-300 text-sm bg-white"
-                defaultValue=""
+                aria-label="Prendi la posizione di un oggetto già importato"
+                title="Prendi la posizione di un oggetto già importato"
+                className="flex-1 min-w-0 px-2 py-2 rounded-lg border border-slate-300 text-sm bg-white disabled:bg-slate-50 disabled:text-slate-400"
+                value={referenceId}
+                disabled={objects.length === 0}
+                onChange={(event) => {
+                  setReferenceId(event.target.value)
+                  if (event.target.value) setPosition(POSITION_ORIGINAL)
+                }}
               >
-                <option value="" />
+                <option value="">{objects.length ? '— posizione del file —' : ''}</option>
+                {objects.map((object) => (
+                  <option key={object.id} value={String(object.id)}>
+                    {object.type} — {object.fileName}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -106,7 +120,7 @@ export default function CbctImportObjectDialog({ onConfirm, onCancel, onMatching
 
         <div className="flex justify-center gap-3 px-5 py-4 border-t border-slate-200">
           <button
-            onClick={() => onConfirm({ type, position })}
+            onClick={() => onConfirm({ type, position, referenceId: position === POSITION_MATCHING ? '' : referenceId })}
             className="w-32 px-4 py-2 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-700"
           >
             ✓ OK
