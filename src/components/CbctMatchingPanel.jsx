@@ -10,9 +10,19 @@ const optionButton = (selected) => `w-full px-3 py-2 rounded-lg text-sm font-med
     : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
 }`
 
+export const MIN_POINT_PAIRS = 3
+export const MAX_POINT_PAIRS = 6
+// Con almeno 4 coppie una coppia sbagliata (es. clic sul dente vicino) ha uno scarto che spicca
+const SUSPECT_PAIR_MM = 2.0
+
 // Pannello "Matching: STL su DICOM": oggetto da allineare, opzioni di matching, Annulla / Applica.
-export default function CbctMatchingPanel({ matching, busy, error, onAssisted, onPoints, onCancel, onApply }) {
-  const { type, fileName, buffer, color, method, result } = matching
+
+export default function CbctMatchingPanel({ matching, busy, error, onAssisted, onPoints, onUndoPoint, onClearPoints, onComputePoints, onCancel, onApply }) {
+  const { type, fileName, buffer, color, method, result, cbctPoints, meshPoints } = matching
+  const pairsReady = cbctPoints.length === meshPoints.length && cbctPoints.length >= MIN_POINT_PAIRS
+  const residuals = result?.pairResiduals ?? []
+  const worst = residuals.length >= 4 ? residuals.indexOf(Math.max(...residuals)) : -1
+  const suspect = worst >= 0 && residuals[worst] > SUSPECT_PAIR_MM ? worst : -1
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="px-4 pt-4 pb-3 border-b border-slate-200">
@@ -53,12 +63,73 @@ export default function CbctMatchingPanel({ matching, busy, error, onAssisted, o
             </button>
           </div>
           {method === MATCHING_POINTS && (
-            <p className="text-xs text-slate-500 mt-2">Selezione dei punti corrispondenti: prossima fase in sviluppo.</p>
+            <div className="mt-3 flex flex-col gap-2">
+              <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2">
+                Clic su un punto della CBCT (vista 3D a sinistra), poi sul punto corrispondente della mesh
+                (a destra), ad esempio la stessa cuspide. Da {MIN_POINT_PAIRS} a {MAX_POINT_PAIRS} coppie, distribuite su
+                tutta l’arcata: più coppie rendono l’allineamento più preciso. Trascina per ruotare.
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="px-2 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">
+                  Punti CBCT: <span className="font-semibold tabular-nums">{cbctPoints.length}/{MAX_POINT_PAIRS}</span>
+                </div>
+                <div className="px-2 py-1.5 rounded-lg bg-sky-50 border border-sky-200 text-sky-800">
+                  Punti mesh: <span className="font-semibold tabular-nums">{meshPoints.length}/{MAX_POINT_PAIRS}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  className={optionButton(false)}
+                  disabled={busy || (cbctPoints.length === 0 && meshPoints.length === 0)}
+                  onClick={onUndoPoint}
+                >
+                  Annulla ultimo
+                </button>
+                <button
+                  className={optionButton(false)}
+                  disabled={busy || (cbctPoints.length === 0 && meshPoints.length === 0)}
+                  onClick={onClearPoints}
+                >
+                  Azzera punti
+                </button>
+              </div>
+              <button
+                className="w-full px-3 py-2 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-700 disabled:bg-slate-300"
+                disabled={busy || !pairsReady}
+                onClick={onComputePoints}
+                title={pairsReady ? undefined : `Servono almeno ${MIN_POINT_PAIRS} punti per vista, in numero uguale`}
+              >
+                Calcola allineamento
+              </button>
+            </div>
           )}
           {result && (
             <p className="text-xs text-slate-700 mt-3">
               Variazione: <span className="font-semibold tabular-nums">{result.rms.toFixed(3)} mm</span>
+              {typeof result.pairsRms === 'number' && (
+                <span className="text-slate-500"> · scarto tra i punti {result.pairsRms.toFixed(2)} mm</span>
+              )}
             </p>
+          )}
+          {method === MATCHING_POINTS && residuals.length > 0 && (
+            <div className="mt-2 text-xs text-slate-600">
+              <p className="mb-1">Scarto di ogni coppia (prima della rifinitura):</p>
+              <div className="flex flex-wrap gap-1">
+                {residuals.map((value, index) => (
+                  <span
+                    key={index}
+                    className={`px-1.5 py-0.5 rounded tabular-nums ${index === suspect ? 'bg-red-100 text-red-700 font-semibold' : 'bg-slate-100'}`}
+                  >
+                    {index + 1}: {value.toFixed(1)} mm
+                  </span>
+                ))}
+              </div>
+              {suspect >= 0 && (
+                <p className="mt-1 text-red-700">
+                  La coppia {suspect + 1} sembra sbagliata: se la Variazione non convince, rifai quei punti.
+                </p>
+              )}
+            </div>
           )}
           {result?.uncertain && (
             <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">

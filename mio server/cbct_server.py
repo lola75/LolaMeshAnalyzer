@@ -9,6 +9,7 @@ tutti i file temporanei finiscono in %TEMP%\\lola_cbct.
 """
 from contextlib import asynccontextmanager
 from pathlib import Path
+import json
 import os
 import shutil
 import tempfile
@@ -540,7 +541,8 @@ MESH_SUFFIXES = {".stl", ".ply", ".obj"}
 async def match_mesh(session_id: str, request: Request):
     """Matching STL su DICOM ("Assistita"): calcola la matrice che porta la mesh sulla CBCT.
 
-    Form: mesh (file STL/PLY/OBJ), boneThreshold (contrasto minimo attuale), progressId (facoltativo).
+    Form: mesh (file STL/PLY/OBJ), boneThreshold (contrasto minimo attuale), progressId (facoltativo),
+    method ("assisted" oppure "points"); con "points" anche pairs = {"mesh": [[x,y,z]...], "cbct": [...]}.
     La mesh non viene modificata: il frontend applica la matrice ai vertici.
     """
     session = _get_session(session_id)
@@ -557,6 +559,15 @@ async def match_mesh(session_id: str, request: Request):
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="Soglia di contrasto mancante.")
         progress_id = form.get("progressId")
+        method = form.get("method") or "assisted"
+        if method == "points":
+            try:
+                pairs = json.loads(form.get("pairs") or "{}")
+                mesh_points, cbct_points = pairs["mesh"], pairs["cbct"]
+            except (ValueError, KeyError, TypeError):
+                raise HTTPException(status_code=422, detail="Coppie di punti mancanti o non valide.")
+        elif method != "assisted":
+            raise HTTPException(status_code=422, detail=f"Metodo di Matching sconosciuto: {method}")
         mesh_path = session["dir"] / f"match_mesh{suffix}"
         with mesh_path.open("wb") as out:
             shutil.copyfileobj(upload.file, out)
@@ -567,6 +578,9 @@ async def match_mesh(session_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Un'altra operazione e' in corso su questo volume.")
     report = _progress_reporter(progress_id)
     try:
+        if method == "points":
+            return await run_in_threadpool(
+                cbct_matching.match_points, session["image"], mesh_path, bone_threshold, mesh_points, cbct_points, report)
         return await run_in_threadpool(cbct_matching.match_assisted, session["image"], mesh_path, bone_threshold, report)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))

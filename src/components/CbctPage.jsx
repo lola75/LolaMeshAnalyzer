@@ -1,16 +1,20 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Niivue, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
 import { apiUrl, checkServerHealth } from '../utils/meshLibBackend'
 import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
+import { fixRenderDepthRange } from '../utils/niivueRenderDepth'
+import { enableTwoSidedMeshes } from '../utils/niivueTwoSidedMeshes'
+import { attachRenderPointPicker } from '../utils/niivuePicking'
 import CbctVolumeWizard, { Switch } from './CbctVolumeWizard'
 import CbctBoxOverlay, { FULL_BOX, NO_CLIP_PLANES, boxClipPlanes, boxCornersMm } from './CbctBoxOverlay'
 import CbctCropOverlay from './CbctCropOverlay'
 import CbctLoadingProgress from './CbctLoadingProgress'
 import CbctMeshStep from './CbctMeshStep'
 import CbctImportObjectDialog, { OBJECT_TYPES, POSITION_MATCHING } from './CbctImportObjectDialog'
-import CbctMatchingPanel, { MATCHING_ASSISTED, MATCHING_POINTS } from './CbctMatchingPanel'
+import CbctMatchingPanel, { MATCHING_ASSISTED, MATCHING_POINTS, MAX_POINT_PAIRS } from './CbctMatchingPanel'
 import CbctMeshPreview from './CbctMeshPreview'
 import CbctContrastControls from './CbctContrastControls'
+import CbctPointMarkers from './CbctPointMarkers'
 import MeshModifier from './MeshModifier'
 import * as THREE from 'three'
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
@@ -214,6 +218,8 @@ export default function CbctPage({ onClose }) {
   const [matchingContrast, setMatchingContrast] = useState(false)
   // Oggetto aperto nel Modificatore mesh: { id, geometry }
   const [editingObject, setEditingObject] = useState(null)
+  const getMainNv = useCallback(() => nvRef.current, [])
+  const getMainCanvas = useCallback(() => canvasRef.current, [])
   const [orient, setOrient] = useState(ORIENT_IDLE)
   const [speckSize, setSpeckSize] = useState(5)
 
@@ -231,6 +237,8 @@ export default function CbctPage({ onClose }) {
       clipPlaneColor: [0, 0, 0, 0],
     })
     nv.attachToCanvas(canvasRef.current)
+    fixRenderDepthRange(nv) // lo zoom non deve tagliare gli oggetti vicini alla camera
+    enableTwoSidedMeshes(nv) // scansioni aperte visibili anche dal retro
     nv.setSliceType(VIEWS.find((v) => v.id === DEFAULT_VIEW).sliceType)
     // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori
     nv.onIntensityChange = (volume) => setWindowRange([volume.cal_min, volume.cal_max])
@@ -715,7 +723,10 @@ export default function CbctPage({ onClose }) {
       return
     }
     setMatchingError(null)
-    setMatching({ type, fileName: file.name, file, buffer, color: objectColor(type), method: null, result: null, previewMesh: null })
+    setMatching({
+      type, fileName: file.name, file, buffer, color: objectColor(type), method: null, result: null, previewMesh: null,
+      cbctPoints: [], meshPoints: [], pickOrder: [],
+    })
     // Il Matching si fa guardando la CBCT: se era nascosta torna visibile
     if (!volumeVisible) {
       nv.setOpacity(0, 1)
@@ -749,13 +760,14 @@ export default function CbctPage({ onClose }) {
     if (nvRef.current) nvRef.current.opts.dragMode = next ? DRAG_MODE.contrast : DRAG_MODE.none
   }
 
-  const runAssistedMatching = async () => {
+  // method: MATCHING_ASSISTED oppure MATCHING_POINTS (con le coppie di punti cliccate)
+  const runMatching = async (method) => {
     const nv = nvRef.current
     if (!matching || !meta || !nv) return
     const current = matching
-    setMatching({ ...current, method: MATCHING_ASSISTED })
+    setMatching({ ...current, method })
     setMatchingError(null)
-    startLoading('Estrazione denti da volume...', 0)
+    startLoading(method === MATCHING_POINTS ? 'Calcolo dai punti...' : 'Estrazione denti da volume...', 0)
     const progressId = newProgressId()
     const stopPolling = pollServerProgress(progressId, 0, 95)
     try {
@@ -763,6 +775,10 @@ export default function CbctPage({ onClose }) {
       form.append('mesh', current.file, current.fileName)
       form.append('boneThreshold', String(windowRange?.[0] ?? DEFAULT_WINDOW[0]))
       form.append('progressId', progressId)
+      form.append('method', method === MATCHING_POINTS ? 'points' : 'assisted')
+      if (method === MATCHING_POINTS) {
+        form.append('pairs', JSON.stringify({ mesh: current.meshPoints, cbct: current.cbctPoints }))
+      }
       const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/match`), { method: 'POST', body: form })
       stopPolling()
       if (!response.ok) throw new Error(await readErrorDetail(response))
@@ -773,7 +789,7 @@ export default function CbctPage({ onClose }) {
       const mesh = await NVMesh.readMesh(current.buffer.slice(0), current.fileName, nv.gl, 1, new Uint8Array([...current.color, 255]))
       transformMesh(mesh, result.matrix, nv.gl)
       nv.addMesh(mesh)
-      setMatching({ ...current, method: MATCHING_ASSISTED, result, previewMesh: mesh })
+      setMatching({ ...current, method, result, previewMesh: mesh })
     } catch (err) {
       setMatchingError(describeError(err))
     } finally {
@@ -782,10 +798,42 @@ export default function CbctPage({ onClose }) {
     }
   }
 
+  // Per Punti: la mesh gia' allineata (se c'e') si toglie, altrimenti i clic sulla CBCT la colpirebbero
   const selectPointsMatching = () => {
-    // TODO: Matching "Per Punti" (punti corrispondenti su CBCT e mesh), prossima fase
-    setMatching((m) => ({ ...m, method: MATCHING_POINTS }))
+    if (matching?.previewMesh) nvRef.current?.removeMesh(matching.previewMesh)
+    setMatchingError(null)
+    setMatching((m) => ({ ...m, method: MATCHING_POINTS, result: null, previewMesh: null }))
   }
+
+  const addMatchingPoint = (side, mm) => {
+    setMatching((m) => {
+      if (!m || m.method !== MATCHING_POINTS) return m
+      const key = side === 'cbct' ? 'cbctPoints' : 'meshPoints'
+      if (m[key].length >= MAX_POINT_PAIRS) return m // massimo 6 punti per vista
+      return { ...m, [key]: [...m[key], mm], pickOrder: [...m.pickOrder, side] }
+    })
+  }
+
+  const undoMatchingPoint = () => {
+    setMatching((m) => {
+      const side = m.pickOrder[m.pickOrder.length - 1]
+      if (!side) return m
+      const key = side === 'cbct' ? 'cbctPoints' : 'meshPoints'
+      return { ...m, [key]: m[key].slice(0, -1), pickOrder: m.pickOrder.slice(0, -1) }
+    })
+  }
+
+  const clearMatchingPoints = () => {
+    setMatching((m) => ({ ...m, cbctPoints: [], meshPoints: [], pickOrder: [] }))
+  }
+
+  // Clic sulla vista 3D della CBCT durante il Matching Per Punti
+  const pointsMode = matching?.method === MATCHING_POINTS
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!pointsMode || !nv || !canvasRef.current) return undefined
+    return attachRenderPointPicker(nv, canvasRef.current, (mm) => addMatchingPoint('cbct', mm))
+  }, [pointsMode])
 
   const cancelMatching = () => {
     if (matching?.previewMesh) nvRef.current?.removeMesh(matching.previewMesh)
@@ -893,8 +941,11 @@ export default function CbctPage({ onClose }) {
               matching={matching}
               busy={busy}
               error={matchingError}
-              onAssisted={runAssistedMatching}
+              onAssisted={() => runMatching(MATCHING_ASSISTED)}
               onPoints={selectPointsMatching}
+              onUndoPoint={undoMatchingPoint}
+              onClearPoints={clearMatchingPoints}
+              onComputePoints={() => runMatching(MATCHING_POINTS)}
               onCancel={cancelMatching}
               onApply={applyMatching}
             />
@@ -1067,12 +1118,21 @@ export default function CbctPage({ onClose }) {
               <p className="text-sm text-white/60">Apri una cartella DICOM o un file ZIP dal pannello a sinistra.</p>
             </div>
           )}
+          {pointsMode && matching.cbctPoints.length > 0 && (
+            <CbctPointMarkers getNv={getMainNv} getCanvas={getMainCanvas} points={matching.cbctPoints} color="#f59e0b" />
+          )}
           {matching && (
             <div
               className="absolute right-0 top-0 w-1/2 border-l border-b border-slate-700/60"
               style={{ height: `${MATCH_TOP * 100}%` }}
             >
-              <CbctMeshPreview buffer={matching.buffer} fileName={matching.fileName} color={matching.color} />
+              <CbctMeshPreview
+                buffer={matching.buffer}
+                fileName={matching.fileName}
+                color={matching.color}
+                onPick={pointsMode ? (mm) => addMatchingPoint('mesh', mm) : undefined}
+                points={pointsMode ? matching.meshPoints : undefined}
+              />
               <span className="absolute top-2 left-3 text-xs text-white/70 pointer-events-none">{matching.type}</span>
             </div>
           )}

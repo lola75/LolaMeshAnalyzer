@@ -287,3 +287,75 @@ def match_assisted(image: sitk.Image, mesh_path: Path, bone_threshold: float, re
         "enamelThreshold": teeth.enamel_threshold,
         "candidates": len(candidates),
     }
+
+
+# --- Matching "Per Punti" ---------------------------------------------------------------
+
+MIN_POINT_PAIRS = 3
+MAX_POINT_PAIRS = 6
+
+
+def rigid_from_pairs(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Rototraslazione che porta i punti source sui target (Kabsch, minimi quadrati)."""
+    source = np.asarray(source, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    if source.shape != target.shape or source.ndim != 2 or source.shape[1] != 3:
+        raise ValueError("Le coppie di punti non sono valide.")
+    if len(source) < MIN_POINT_PAIRS:
+        raise ValueError(f"Servono almeno {MIN_POINT_PAIRS} coppie di punti.")
+    if len(source) > MAX_POINT_PAIRS:
+        raise ValueError(f"Al massimo {MAX_POINT_PAIRS} coppie di punti.")
+    source_center, target_center = source.mean(axis=0), target.mean(axis=0)
+    spread = np.linalg.svd(source - source_center, compute_uv=False)
+    if spread[1] < 1.0:  # punti quasi in fila: la rotazione attorno alla linea non e' determinata
+        raise ValueError("I punti sono troppo vicini o quasi allineati: scegline su denti lontani tra loro.")
+    u, _, vt = np.linalg.svd((source - source_center).T @ (target - target_center))
+    flip = np.sign(np.linalg.det(vt.T @ u.T))
+    rotation = vt.T @ np.diag([1.0, 1.0, flip]) @ u.T
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = target_center - rotation @ source_center
+    return matrix
+
+
+def match_points(image: sitk.Image, mesh_path: Path, bone_threshold: float, mesh_points_mm: list,
+                 cbct_points_mm: list, report=_no_progress) -> dict:
+    """Allinea la mesh alla CBCT da coppie di punti corrispondenti, poi rifinisce con ICP sulle corone.
+
+    mesh_points_mm: punti cliccati sulla mesh (coordinate del file); cbct_points_mm: punti
+    corrispondenti cliccati sulla CBCT (RAS mm), nello stesso ordine.
+    """
+    report(5, "Calcolo dalla posizione dei punti...")
+    mesh_pairs = np.asarray(mesh_points_mm, dtype=np.float64)
+    cbct_pairs = np.asarray(cbct_points_mm, dtype=np.float64)
+    initial = rigid_from_pairs(mesh_pairs, cbct_pairs)
+    moved = mesh_pairs @ initial[:3, :3].T + initial[:3, 3]
+    pair_residuals = np.linalg.norm(moved - cbct_pairs, axis=1)
+    pairs_rms = float(np.sqrt(np.mean(pair_residuals ** 2)))
+
+    report(15, "Estrazione denti da volume...")
+    teeth = TeethVolume(image, bone_threshold)
+    report(45, "Lettura della mesh...")
+    mesh_points, score_points, score_normals, _ = read_mesh_samples(mesh_path)
+    source, target = _cloud(mesh_points), _cloud(teeth.crown_points)
+    target_levels = {voxel: _with_normals(target, voxel) for voxel, _ in ICP_LEVELS_MM}
+
+    report(60, "Matching: rifinitura...")
+    matrix, result = _icp(source, target_levels, initial, ICP_LEVELS_MM)
+    if result is None or result.fitness <= 0:
+        raise ValueError("La rifinitura non ha trovato corrispondenze: controlla che i punti siano corrispondenti.")
+    outside = _outside_dense(teeth, score_points, score_normals, matrix)
+    fit = o3d.pipelines.registration.evaluate_registration(
+        _cloud(score_points), target.voxel_down_sample(0.3), FIT_DISTANCE_MM, matrix).fitness
+    report(100, "Matching completato")
+    return {
+        "matrix": matrix.tolist(),
+        "rms": float(result.inlier_rmse),
+        "fitness": float(fit),
+        "outsideDense": outside,
+        "uncertain": bool(outside > UNCERTAIN_OUTSIDE),
+        "pairsRms": pairs_rms,  # distanza media tra i punti cliccati dopo il primo allineamento
+        "pairResiduals": pair_residuals.tolist(),  # scarto di ogni coppia: una coppia sbagliata spicca
+        "teethThreshold": teeth.teeth_threshold,
+        "enamelThreshold": teeth.enamel_threshold,
+    }
