@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('electron', {
   saveMeshFile: async ({ defaultPath, data }) => {
     return await ipcRenderer.invoke('save-mesh-file', { defaultPath, data })
   },
+  saveMeshFiles: async ({ title, files }) => {
+    return await ipcRenderer.invoke('save-mesh-files', { title, files })
+  },
   startCbctServer: async () => {
     return await ipcRenderer.invoke('start-cbct-server')
   },

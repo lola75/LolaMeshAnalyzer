@@ -223,6 +223,33 @@ ipcMain.handle('save-inverted-log', async (event, { defaultPath, content }) => {
   }
 })
 
+// Esportazione degli oggetti CBCT: scelta della cartella, poi un file per oggetto.
+// Un file gia' presente non viene sovrascritto: si aggiunge _2, _3...
+ipcMain.handle('save-mesh-files', async (event, { title, files }) => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: title || 'Scegli la cartella di destinazione',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (canceled || !filePaths?.length) return { success: false, canceled: true }
+    const folder = filePaths[0]
+    const saved = []
+    for (const { name, data } of files) {
+      const ext = path.extname(name)
+      const base = path.basename(name, ext)
+      let target = path.join(folder, name)
+      for (let n = 2; fs.existsSync(target); n++) target = path.join(folder, `${base}_${n}${ext}`)
+      if (typeof data === 'string') fs.writeFileSync(target, data, 'utf8')
+      else fs.writeFileSync(target, Buffer.from(data))
+      saved.push(target)
+    }
+    return { success: true, folder, saved }
+  } catch (err) {
+    console.error('Errore esportazione oggetti:', err)
+    return { success: false, error: err.message }
+  }
+})
+
 // IPC handler per salvare la mesh modificata (STL binario o ASCII) con "Salva con nome"
 ipcMain.handle('save-mesh-file', async (event, { defaultPath, data }) => {
   try {

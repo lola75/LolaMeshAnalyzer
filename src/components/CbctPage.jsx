@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Niivue, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
+import { Niivue, NVImage, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
 import { apiUrl, checkServerHealth } from '../utils/meshLibBackend'
 import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
+import { attachRenderDragPan, resetRenderPan } from '../utils/niivueRenderPan'
+import { MESH_EXPORT_FORMATS, meshToFile } from '../utils/meshFileWriters'
 import { fixRenderDepthRange } from '../utils/niivueRenderDepth'
 import { enableTwoSidedMeshes } from '../utils/niivueTwoSidedMeshes'
+import { enableSliceTiles, attachSliceTileDragZoom, resetSliceTileZoom } from '../utils/niivueSliceTiles'
+import { enableSliceWindow } from '../utils/niivueSliceWindow'
 import { attachRenderPointPicker } from '../utils/niivuePicking'
 import CbctVolumeWizard, { Switch } from './CbctVolumeWizard'
 import CbctBoxOverlay, { FULL_BOX, NO_CLIP_PLANES, boxClipPlanes, boxCornersMm } from './CbctBoxOverlay'
@@ -15,6 +19,8 @@ import CbctMatchingPanel, { MATCHING_ASSISTED, MATCHING_POINTS, MAX_POINT_PAIRS 
 import CbctMeshPreview from './CbctMeshPreview'
 import CbctContrastControls from './CbctContrastControls'
 import CbctPointMarkers from './CbctPointMarkers'
+import CbctMeshGoniometer from './CbctMeshGoniometer'
+import CbctSegmentationStep from './CbctSegmentationStep'
 import MeshModifier from './MeshModifier'
 import * as THREE from 'three'
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
@@ -32,6 +38,8 @@ const VIEWS = [
 // Impostazioni applicate a ogni nuova CBCT caricata
 const DEFAULT_VIEW = 'render'
 const DEFAULT_WINDOW = [432, 2340]
+// Contrasto predefinito delle slice del Matching (separato dal 3D)
+const DEFAULT_SLICE_WINDOW = [-1000, 2781]
 
 // Le CBCT non sono calibrate in Hounsfield: i preset sono relativi alla finestra automatica
 const WINDOW_PRESETS = [
@@ -43,6 +51,10 @@ const WINDOW_PRESETS = [
 const WIZARD_STEPS = ['Volume', 'Allineamento mesh', 'Segmentazione']
 const STEP_VOLUME = 0
 const STEP_MESH = 1
+const STEP_SEGMENTATION = 2
+const POSITION_SEGMENTATION = 'segmentation'
+const SEGMENT_PREVIEW_DELAY_MS = 400
+const SEGMENT_MASK_OPACITY = 0.45
 const MESH_FILE_TYPES = '.stl,.ply,.obj'
 // Colore di ogni tipo di oggetto 3D nel visualizzatore (stesso ordine di OBJECT_TYPES)
 const OBJECT_COLORS = [
@@ -59,6 +71,11 @@ const MATCH_LAYOUT = [
   { sliceType: SLICE_TYPE.AXIAL, position: [0, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
   { sliceType: SLICE_TYPE.CORONAL, position: [1 / 3, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
   { sliceType: SLICE_TYPE.SAGITTAL, position: [2 / 3, MATCH_TOP, 1 / 3, 1 - MATCH_TOP] },
+]
+// Matching manuale di un oggetto gia' nell'elenco: 3D su tutta la larghezza, slice col goniometro
+const ADJUST_LAYOUT = [
+  { sliceType: SLICE_TYPE.RENDER, position: [0, 0, 1, MATCH_TOP] },
+  ...MATCH_LAYOUT.slice(1),
 ]
 const MESH_CONTOUR_MM = 0.6 // spessore della mesh mostrata sulle slice 2D (effetto contorno)
 
@@ -114,6 +131,12 @@ const BOX_IDLE = { active: false, changed: false, ...FULL_BOX }
 
 // --- matrici 4x4 per righe (come getVolumeAffine/setVolumeAffine di NiiVue) ---
 const matMul = (a, b) => a.map((row) => b[0].map((_, j) => row.reduce((sum, v, k) => sum + v * b[k][j], 0)))
+// Inversa di una trasformazione rigida (rotazione + traslazione)
+const rigidInverse = (m) => {
+  const r = [0, 1, 2].map((i) => [0, 1, 2].map((j) => m[j][i]))
+  const t = r.map((row) => -(row[0] * m[0][3] + row[1] * m[1][3] + row[2] * m[2][3]))
+  return [[...r[0], t[0]], [...r[1], t[1]], [...r[2], t[2]], [0, 0, 0, 1]]
+}
 const matVec = (m, v) => m.map((row) => row.reduce((sum, x, k) => sum + x * v[k], 0))
 const translation = ([x, y, z]) => [[1, 0, 0, x], [0, 1, 0, y], [0, 0, 1, z], [0, 0, 0, 1]]
 const rotationX = (deg) => {
@@ -216,8 +239,23 @@ export default function CbctPage({ onClose }) {
   const [matchingError, setMatchingError] = useState(null)
   // Nel Matching contrasto e luminosita' sono bloccati finche' l'utente non li riattiva dal tastino
   const [matchingContrast, setMatchingContrast] = useState(false)
+  // Contrasto delle slice 2D (4 viste, viste singole e Matching), separato dal 3D (null = uguale al 3D)
+  const [sliceContrast, setSliceContrast] = useState(false)
+  const [sliceWindowRange, setSliceWindowRange] = useState(DEFAULT_SLICE_WINDOW)
+  // per il contrasto col tasto destro (callback di NiiVue creata una volta sola)
+  const windowRangeRef = useRef(null)
+  windowRangeRef.current = windowRange
+  const sliceWindowRangeRef = useRef(null)
+  sliceWindowRangeRef.current = sliceWindowRange
   // Oggetto aperto nel Modificatore mesh: { id, geometry }
   const [editingObject, setEditingObject] = useState(null)
+  // Matching manuale (goniometro) di un oggetto dell'elenco: { id, delta } con delta = correzione
+  const [adjusting, setAdjusting] = useState(null)
+  // Segmentazione (passo 3): parametri, anteprima della maschera (volume sovrapposto in NiiVue)
+  const [seg, setSeg] = useState(null)
+  const [segPreview, setSegPreview] = useState({ busy: false, volumeMm3: null })
+  const segMaskRef = useRef(null)
+  const segRequestRef = useRef(0)
   const getMainNv = useCallback(() => nvRef.current, [])
   const getMainCanvas = useCallback(() => canvasRef.current, [])
   const [orient, setOrient] = useState(ORIENT_IDLE)
@@ -239,13 +277,46 @@ export default function CbctPage({ onClose }) {
     nv.attachToCanvas(canvasRef.current)
     fixRenderDepthRange(nv) // lo zoom non deve tagliare gli oggetti vicini alla camera
     enableTwoSidedMeshes(nv) // scansioni aperte visibili anche dal retro
+    enableSliceTiles(nv) // slice del Matching in riquadri uguali, ognuno col suo zoom
+    enableSliceWindow(nv) // contrasto delle slice separato da quello del 3D
     nv.setSliceType(VIEWS.find((v) => v.id === DEFAULT_VIEW).sliceType)
-    // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori
-    nv.onIntensityChange = (volume) => setWindowRange([volume.cal_min, volume.cal_max])
+    // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori. Se il
+    // trascinamento e' partito su una slice e le slice hanno un contrasto proprio, il nuovo
+    // contrasto va alle slice e il 3D resta com'era
+    let rightDownOnSlice = false
+    const onRightDown = (event) => {
+      if (event.button !== 2) return
+      const rect = canvasRef.current.getBoundingClientRect()
+      const dpr = canvasRef.current.width / rect.width || 1
+      const x = (event.clientX - rect.left) * dpr
+      const y = (event.clientY - rect.top) * dpr
+      rightDownOnSlice = (nv.screenSlices ?? []).some(({ leftTopWidthHeight: [l, t, w, h], axCorSag }) =>
+        axCorSag <= SLICE_TYPE.SAGITTAL && x >= l && x < l + w && y >= t && y < t + h)
+    }
+    const viewerContainer = canvasRef.current.parentElement ?? canvasRef.current
+    viewerContainer.addEventListener('mousedown', onRightDown, true)
+    nv.onIntensityChange = (volume) => {
+      const range = [volume.cal_min, volume.cal_max]
+      const window3D = windowRangeRef.current
+      if (rightDownOnSlice && sliceWindowRangeRef.current && window3D) {
+        volume.cal_min = window3D[0]
+        volume.cal_max = window3D[1]
+        nv.updateGLVolume()
+        setSliceWindowRange(range)
+        return
+      }
+      setWindowRange(range)
+    }
     nvRef.current = nv
     const detachWheelZoom = attachRenderWheelZoom(nv, canvasRef.current)
+    const detachRenderPan = attachRenderDragPan(nv, canvasRef.current) // rotella premuta sul 3D
+    // Tasto destro trascinato sulle slice del Matching: zoom del riquadro
+    const detachTileZoom = attachSliceTileDragZoom(nv, canvasRef.current)
     return () => {
+      viewerContainer.removeEventListener('mousedown', onRightDown, true)
       detachWheelZoom()
+      detachRenderPan()
+      detachTileZoom()
       nvRef.current = null
       try {
         nv.cleanup()
@@ -374,6 +445,10 @@ export default function CbctPage({ onClose }) {
     }
 
     setMeta(volumeMeta)
+    if (!keepWindow) {
+      setSliceWindowRange(DEFAULT_SLICE_WINDOW)
+      resetRenderPan(nv) // CBCT nuova: 3D di nuovo al centro
+    }
     const [low, high] = keepWindow || DEFAULT_WINDOW
     applyWindow(low, high)
     nv.setSliceType(VIEWS.find((v) => v.id === viewId).sliceType)
@@ -421,6 +496,8 @@ export default function CbctPage({ onClose }) {
     setOrient(ORIENT_IDLE)
     closeBox()
     removeAllObjects()
+    removeSegmentMask()
+    setSeg(null)
     setStep(STEP_VOLUME)
     setVolumeVisible(true)
     startLoading(serverFrom > 0 ? 'Invio dei file al server...' : 'Lettura della serie DICOM...', 0)
@@ -503,6 +580,25 @@ export default function CbctPage({ onClose }) {
     const [low, high] = preset.range(lo, hi)
     applyWindow(low, high ?? hi)
   }
+
+  const applySliceWindow = (low, high) => setSliceWindowRange([low, high])
+
+  const applySlicePreset = (preset) => {
+    if (!meta) return
+    const [lo, hi] = meta.suggestedWindow
+    const [low, high] = preset.range(lo, hi)
+    applySliceWindow(low, high ?? hi)
+  }
+
+  const closeSliceContrast = () => setSliceContrast(false)
+
+  // Texture delle slice ricreata a ogni cambio di contrasto, vista o volume (meta e useReduced)
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv?.setSliceWindow) return
+    const viewWithSlices = Boolean(matching || adjusting) || view !== 'render'
+    nv.setSliceWindow(meta && viewWithSlices && sliceWindowRange ? sliceWindowRange : null)
+  }, [meta, useReduced, view, Boolean(matching || adjusting), sliceWindowRange])
 
   // --- Operazioni del Wizard volume (eseguite dal server sul volume completo) ---
 
@@ -652,9 +748,154 @@ export default function CbctPage({ onClose }) {
 
   const goToStep = (index) => {
     if (index === STEP_MESH) changeView('render')
+    if (index === STEP_SEGMENTATION) {
+      changeView('multi') // slice per scegliere il punto della regione, 3D per il risultato
+      if (!seg && meta) setSeg(defaultSegmentation())
+    } else {
+      removeSegmentMask()
+    }
     setError(null)
     setNotice(null)
     setStep(index)
+  }
+
+  // --- Passo 3: Segmentazione ---
+
+  const segmentPresets = meta ? [
+    // osso: dal contrasto minimo attuale del 3D (lo stesso usato per il Matching)
+    { id: 'bone', label: 'Osso', range: () => ({ low: windowRange?.[0] ?? DEFAULT_WINDOW[0], high: meta.max }) },
+    { id: 'teeth', label: 'Denti / smalto', range: () => ({ low: meta.suggestedWindow[0] + 0.7 * (meta.suggestedWindow[1] - meta.suggestedWindow[0]), high: meta.max }) },
+  ] : []
+
+  const defaultSegmentation = () => ({
+    low: windowRange?.[0] ?? DEFAULT_WINDOW[0],
+    high: meta.max,
+    seed: null,
+    minIslandMm3: 100,
+    fillHoles: false,
+    maskVisible: true,
+    type: 'Bone Surface',
+    spacingMm: 0.3,
+    smoothing: 5,
+    maxTriangles: 300_000,
+  })
+
+  const removeSegmentMask = () => {
+    const nv = nvRef.current
+    if (nv && segMaskRef.current && nv.volumes.includes(segMaskRef.current)) nv.removeVolume(segMaskRef.current)
+    segMaskRef.current = null
+    segRequestRef.current += 1 // le anteprime in corso non vanno piu' mostrate
+    setSegPreview({ busy: false, volumeMm3: null })
+  }
+
+  const segmentBody = (current) => ({
+    low: current.low,
+    high: current.high,
+    seed: current.seed,
+    minIslandMm3: current.seed ? 0 : current.minIslandMm3,
+    fillHoles: current.fillHoles,
+    reduced: Boolean(useReduced && meta?.reduced),
+    spacingMm: current.spacingMm,
+    smoothing: current.smoothing,
+    maxTriangles: current.maxTriangles,
+  })
+
+  // Anteprima: maschera calcolata dal server sulla griglia mostrata, sovrapposta in rosso
+  const segPreviewKey = seg && meta && step === STEP_SEGMENTATION
+    ? JSON.stringify([meta.id, meta.version, useReduced, seg.low, seg.high, seg.seed, seg.minIslandMm3, seg.fillHoles])
+    : null
+  useEffect(() => {
+    if (!segPreviewKey) return undefined
+    const requestId = ++segRequestRef.current
+    const timer = setTimeout(async () => {
+      const nv = nvRef.current
+      if (!nv) return
+      setSegPreview((p) => ({ ...p, busy: true }))
+      try {
+        const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/preview`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(segmentBody(seg)),
+        })
+        if (response.status === 409) return // operazione in corso: si riprova alla prossima modifica
+        if (!response.ok) throw new Error(await readErrorDetail(response))
+        const result = await response.json()
+        const maskResponse = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/mask.nii.gz?m=${result.maskId}`))
+        if (!maskResponse.ok) throw new Error(await readErrorDetail(maskResponse))
+        const buffer = await maskResponse.arrayBuffer()
+        if (requestId !== segRequestRef.current) return
+        const mask = await NVImage.new(buffer, 'mask.nii.gz', 'red', seg.maskVisible ? SEGMENT_MASK_OPACITY : 0, null, 0.5, 1)
+        if (requestId !== segRequestRef.current) return
+        if (segMaskRef.current && nv.volumes.includes(segMaskRef.current)) nv.removeVolume(segMaskRef.current)
+        segMaskRef.current = mask
+        nv.addVolume(mask)
+        setError(null)
+        setSegPreview({ busy: false, volumeMm3: result.volumeMm3 })
+      } catch (err) {
+        if (requestId === segRequestRef.current) {
+          setError(describeError(err))
+          setSegPreview({ busy: false, volumeMm3: null })
+        }
+      } finally {
+        if (requestId === segRequestRef.current) setSegPreview((p) => ({ ...p, busy: false }))
+      }
+    }, SEGMENT_PREVIEW_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [segPreviewKey])
+
+  // Mostra/nasconde la zona selezionata senza ricalcolarla
+  useEffect(() => {
+    const nv = nvRef.current
+    const mask = segMaskRef.current
+    if (!nv || !mask || !seg) return
+    const index = nv.volumes.indexOf(mask)
+    if (index > 0) nv.setOpacity(index, seg.maskVisible ? SEGMENT_MASK_OPACITY : 0)
+  }, [seg?.maskVisible])
+
+  const changeSegmentation = (patch) => setSeg((current) => ({ ...current, ...patch }))
+
+  const segmentSeedFromCursor = () => {
+    const nv = nvRef.current
+    if (!nv?.volumes.length) return
+    const mm = nv.frac2mm(nv.scene.crosshairPos, 0, true)
+    changeSegmentation({ seed: [mm[0], mm[1], mm[2]].map((v) => Math.round(v * 100) / 100) })
+  }
+
+  const createSegmentModel = async () => {
+    const nv = nvRef.current
+    if (!seg || !meta || !nv) return
+    setError(null)
+    setNotice(null)
+    startLoading('Creazione del modello 3D...', 0)
+    const progressId = newProgressId()
+    const stopPolling = pollServerProgress(progressId, 0, 90)
+    try {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/mesh`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...segmentBody(seg), progressId }),
+      })
+      stopPolling()
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      const stats = await response.json()
+      startLoading('Apertura del modello...', 93)
+      const modelResponse = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/model.stl?m=${stats.modelId}`))
+      if (!modelResponse.ok) throw new Error(await readErrorDetail(modelResponse))
+      const buffer = await modelResponse.arrayBuffer()
+      const color = objectColor(seg.type)
+      const fileName = `Segmentazione ${seg.type}.stl`
+      const mesh = await NVMesh.readMesh(buffer, fileName, nv.gl, 1, new Uint8Array([...color, 255]))
+      nv.addMesh(mesh)
+      const object = { id: mesh.id, type: seg.type, fileName, color, position: POSITION_SEGMENTATION, matrix: IDENTITY, mesh, visible: true }
+      setObjects((list) => [...list, object])
+      setSelectedObjectId(object.id)
+      setNotice(`${seg.type} creato: ${stats.triangles.toLocaleString('it-IT')} triangoli, voxel ${stats.spacing} mm. È negli Oggetti 3D (passo 2).`)
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      stopPolling()
+      stopLoading()
+    }
   }
 
   // Pulsanti "Matching" e "Mantieni posizione originale" della finestra Importa oggetto:
@@ -727,6 +968,12 @@ export default function CbctPage({ onClose }) {
       type, fileName: file.name, file, buffer, color: objectColor(type), method: null, result: null, previewMesh: null,
       cbctPoints: [], meshPoints: [], pickOrder: [],
     })
+    enterSliceLayout(MATCH_LAYOUT)
+  }
+
+  // Layout con 3D e tre slice (Matching e Matching manuale)
+  const enterSliceLayout = (layout) => {
+    const nv = nvRef.current
     // Il Matching si fa guardando la CBCT: se era nascosta torna visibile
     if (!volumeVisible) {
       nv.setOpacity(0, 1)
@@ -735,12 +982,13 @@ export default function CbctPage({ onClose }) {
     nv.opts.dragMode = DRAG_MODE.none // tasto destro: niente cambi di contrasto
     setMatchingContrast(false)
     nv.setSliceType(SLICE_TYPE.MULTIPLANAR)
-    nv.setCustomLayout(MATCH_LAYOUT)
+    resetSliceTileZoom(nv)
+    nv.setCustomLayout(layout)
     nv.setSliceMM(true)
     nv.setMeshThicknessOn2D(MESH_CONTOUR_MM)
   }
 
-  const closeMatchingTool = () => {
+  const exitSliceLayout = () => {
     const nv = nvRef.current
     if (nv) {
       nv.opts.dragMode = DRAG_MODE.contrast
@@ -749,9 +997,58 @@ export default function CbctPage({ onClose }) {
       nv.setMeshThicknessOn2D(Infinity)
       nv.setSliceType(VIEWS.find((v) => v.id === view).sliceType)
     }
+    setMatchingContrast(false)
+    closeSliceContrast()
+  }
+
+  const closeMatchingTool = () => {
+    exitSliceLayout()
     setMatching(null)
     setMatchingError(null)
-    setMatchingContrast(false)
+  }
+
+  // Goniometro durante il Matching: la correzione si compone con la matrice del risultato
+  const commitMatchingCorrection = (delta) => {
+    setMatching((m) => (m?.result ? { ...m, result: { ...m.result, matrix: matMul(delta, m.result.matrix), corrected: true } } : m))
+  }
+
+  // --- Matching manuale di un oggetto gia' nell'elenco (goniometro sulle slice) ---
+
+  const startAdjustObject = (id) => {
+    const object = objects.find((o) => o.id === id)
+    if (!object || !nvRef.current) return
+    setSelectedObjectId(id)
+    if (!object.visible) {
+      nvRef.current.setMeshProperty(object.mesh.id, 'visible', true)
+      setObjects((list) => list.map((o) => (o.id === id ? { ...o, visible: true } : o)))
+    }
+    setNotice(null)
+    setAdjusting({ id, delta: IDENTITY })
+    enterSliceLayout(ADJUST_LAYOUT)
+  }
+
+  const commitAdjustCorrection = (delta) => {
+    setAdjusting((a) => (a ? { ...a, delta: matMul(delta, a.delta) } : a))
+  }
+
+  // Annulla: la mesh torna dov'era prima del Matching manuale
+  const cancelAdjustObject = () => {
+    const object = objects.find((o) => o.id === adjusting?.id)
+    if (object && nvRef.current) {
+      transformMesh(object.mesh, rigidInverse(adjusting.delta), nvRef.current.gl)
+      nvRef.current.drawScene()
+    }
+    setAdjusting(null)
+    exitSliceLayout()
+  }
+
+  const applyAdjustObject = () => {
+    const object = objects.find((o) => o.id === adjusting?.id)
+    const { delta } = adjusting
+    setObjects((list) => list.map((o) => (o.id === adjusting.id ? { ...o, matrix: matMul(delta, o.matrix) } : o)))
+    setAdjusting(null)
+    exitSliceLayout()
+    if (object) setNotice(`Posizione di ${object.type} corretta.`)
   }
 
   const toggleMatchingContrast = () => {
@@ -893,6 +1190,45 @@ export default function CbctPage({ onClose }) {
     if (selectedObjectId === id) setSelectedObjectId(null)
   }
 
+  // Esporta tutti gli oggetti della lista nella posizione attuale (coordinate della CBCT, come
+  // vengono mostrati), un file per oggetto. Desktop: scelta della cartella; browser: download.
+  const exportObjects = async (formatId) => {
+    const format = MESH_EXPORT_FORMATS.find((f) => f.id === formatId)
+    if (!format || objects.length === 0) return
+    setError(null)
+    setNotice(null)
+    const safe = (text) => String(text).replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'oggetto'
+    const used = new Set()
+    const files = objects.map((object) => {
+      let name = `${safe(object.type)}_${safe(object.fileName)}`
+      for (let n = 2; used.has(name.toLowerCase()); n++) name = `${safe(object.type)}_${safe(object.fileName)}_${n}`
+      used.add(name.toLowerCase())
+      return { name: `${name}.${format.extension}`, data: meshToFile(object.mesh.pts, object.mesh.tris, format.id, name) }
+    })
+    try {
+      const saveFiles = window.electron?.saveMeshFiles
+      if (typeof saveFiles === 'function') {
+        const result = await saveFiles({ title: `Esporta oggetti in ${format.label}`, files })
+        if (result?.error) throw new Error(result.error)
+        if (!result?.success) return
+        setNotice(`${files.length} ${files.length === 1 ? 'oggetto esportato' : 'oggetti esportati'} in ${format.label} nella cartella ${result.folder}.`)
+        return
+      }
+      for (const file of files) {
+        const blob = new Blob([file.data], { type: typeof file.data === 'string' ? 'text/plain' : 'application/octet-stream' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = file.name
+        link.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+      setNotice(`${files.length} ${files.length === 1 ? 'oggetto esportato' : 'oggetti esportati'} in ${format.label}.`)
+    } catch (err) {
+      setError(`Esportazione non riuscita: ${err.message}`)
+    }
+  }
+
   const removeAllObjects = () => {
     for (const object of objects) nvRef.current?.removeMesh(object.mesh)
     setObjects([])
@@ -900,6 +1236,10 @@ export default function CbctPage({ onClose }) {
   }
 
   const busy = Boolean(loadingMessage)
+  const sliceLayout = Boolean(matching || adjusting)
+  // Viste con slice 2D: contrasto delle slice separato (texture propria solo quando serve)
+  const viewHasSlices = sliceLayout || view !== 'render'
+  const adjustingObject = adjusting ? objects.find((o) => o.id === adjusting.id) : null
   const editing = crop.active || orient.active || box.active
   const canGoToMesh = Boolean(meta) && !busy && !editing
   const canLoad = serverStatus === 'online' && !busy && !crop.active && !orient.active && !box.active
@@ -951,19 +1291,48 @@ export default function CbctPage({ onClose }) {
             />
           </aside>
         )}
-        <aside className={`alignment-card border w-80 shrink-0 flex flex-col min-h-0 ${matching ? 'hidden' : ''}`}>
+        {adjustingObject && (
+          <aside className="alignment-card border w-80 shrink-0 flex flex-col min-h-0">
+            <div className="px-4 pt-4 pb-3 border-b border-slate-200">
+              <h2 className="text-base font-semibold text-slate-900">Matching manuale</h2>
+              <p className="text-xs text-slate-500 mt-1 truncate" title={adjustingObject.fileName}>
+                {adjustingObject.type} · {adjustingObject.fileName}
+              </p>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-4">
+              <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2">
+                Sulle slice: trascina lungo i cerchi blu per ruotare l’oggetto attorno all’asse della slice,
+                trascina il pallino centrale per spostarlo. Controlla il contorno sulle tre slice.
+              </p>
+            </div>
+            <div className="p-3 border-t border-slate-200 grid grid-cols-2 gap-2">
+              <button
+                onClick={cancelAdjustObject}
+                className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-700 hover:bg-slate-100"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={applyAdjustObject}
+                className="px-3 py-2 rounded-lg text-sm bg-sky-600 text-white hover:bg-sky-700"
+              >
+                Applica
+              </button>
+            </div>
+          </aside>
+        )}
+        <aside className={`alignment-card border w-80 shrink-0 flex flex-col min-h-0 ${matching || adjusting ? 'hidden' : ''}`}>
           <div className="px-4 pt-4 pb-3 border-b border-slate-200">
             <h2 className="text-base font-semibold text-slate-900">Wizard volume</h2>
             <ol className="flex gap-1 mt-2">
               {WIZARD_STEPS.map((label, index) => {
-                const enabled = index === step || (index === STEP_VOLUME && !busy) || (index === STEP_MESH && canGoToMesh)
+                const enabled = index === step || (index === STEP_VOLUME && !busy) || (index >= STEP_MESH && canGoToMesh)
                 return (
                   <li key={label} className="flex-1">
                     <button
                       onClick={() => goToStep(index)}
                       disabled={!enabled || index === step}
                       aria-current={index === step ? 'step' : undefined}
-                      title={index > STEP_MESH ? 'Prossima fase in sviluppo' : undefined}
                       className={`w-full h-full text-center text-[11px] leading-tight px-1 py-1 rounded transition-colors ${index === step ? 'bg-sky-600 text-white' : enabled ? 'bg-slate-100 text-slate-700 hover:bg-sky-100' : 'bg-slate-100 text-slate-400'}`}
                     >
                       {index + 1}. {label}
@@ -982,7 +1351,29 @@ export default function CbctPage({ onClose }) {
               className="hidden"
               onChange={(e) => importObjectFile(e.target.files?.[0])}
             />
-            {step === STEP_MESH ? (
+            {step === STEP_SEGMENTATION && seg && meta ? (
+              <>
+                {error && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
+                )}
+                {notice && !error && (
+                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">{notice}</div>
+                )}
+                <CbctSegmentationStep
+                  meta={meta}
+                  seg={seg}
+                  step={sliderStep}
+                  busy={busy}
+                  previewing={segPreview.busy}
+                  volumeMm3={segPreview.volumeMm3}
+                  presets={segmentPresets}
+                  onChange={changeSegmentation}
+                  onSeedFromCursor={segmentSeedFromCursor}
+                  onClearSeed={() => changeSegmentation({ seed: null })}
+                  onCreate={createSegmentModel}
+                />
+              </>
+            ) : step === STEP_MESH ? (
               <>
                 {error && (
                   <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
@@ -999,6 +1390,8 @@ export default function CbctPage({ onClose }) {
                   onRemove={removeObject}
                   onToggleVisible={toggleObjectVisible}
                   onEdit={editObject}
+                  onMatch={startAdjustObject}
+                  onExport={exportObjects}
                 />
               </>
             ) : (
@@ -1084,8 +1477,7 @@ export default function CbctPage({ onClose }) {
             </button>
             <button
               onClick={() => goToStep(step + 1)}
-              disabled={step !== STEP_VOLUME || !canGoToMesh}
-              title={step === STEP_MESH ? 'Segmentazione: prossima fase in sviluppo' : undefined}
+              disabled={step === STEP_SEGMENTATION || !canGoToMesh}
               className="px-3 py-2 rounded-lg text-sm bg-sky-600 text-white hover:bg-sky-700 disabled:bg-slate-300"
             >
               Passo successivo
@@ -1121,6 +1513,22 @@ export default function CbctPage({ onClose }) {
           {pointsMode && matching.cbctPoints.length > 0 && (
             <CbctPointMarkers getNv={getMainNv} getCanvas={getMainCanvas} points={matching.cbctPoints} color="#f59e0b" />
           )}
+          {matching?.previewMesh && !busy && (
+            <CbctMeshGoniometer
+              getNv={getMainNv}
+              getCanvas={getMainCanvas}
+              mesh={matching.previewMesh}
+              onCommit={commitMatchingCorrection}
+            />
+          )}
+          {adjustingObject && (
+            <CbctMeshGoniometer
+              getNv={getMainNv}
+              getCanvas={getMainCanvas}
+              mesh={adjustingObject.mesh}
+              onCommit={commitAdjustCorrection}
+            />
+          )}
           {matching && (
             <div
               className="absolute right-0 top-0 w-1/2 border-l border-b border-slate-700/60"
@@ -1136,7 +1544,7 @@ export default function CbctPage({ onClose }) {
               <span className="absolute top-2 left-3 text-xs text-white/70 pointer-events-none">{matching.type}</span>
             </div>
           )}
-          {matching && !busy && (
+          {sliceLayout && !busy && (
             <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-2">
               <button
                 onClick={toggleMatchingContrast}
@@ -1153,7 +1561,7 @@ export default function CbctPage({ onClose }) {
               </button>
               {matchingContrast && meta && (
                 <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
-                  <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità</p>
+                  <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità 3D</p>
                   <CbctContrastControls
                     meta={meta}
                     presets={WINDOW_PRESETS}
@@ -1162,7 +1570,48 @@ export default function CbctPage({ onClose }) {
                     onPreset={applyPreset}
                     onWindow={applyWindow}
                   />
-                  <p className="text-[11px] text-slate-500 mt-2">Anche col tasto destro trascinato sulla CBCT.</p>
+                  <p className="text-[11px] text-slate-500 mt-2">Anche col tasto destro trascinato sulla vista 3D.</p>
+                </div>
+              )}
+            </div>
+          )}
+          {viewHasSlices && !busy && meta && !crop.active && (
+            <div
+              className="absolute left-3 z-10 flex flex-col items-start gap-2"
+              style={{ top: sliceLayout ? `calc(${MATCH_TOP * 100}% + 0.75rem)` : '0.75rem' }}
+            >
+              <button
+                onClick={() => setSliceContrast((on) => !on)}
+                aria-pressed={sliceContrast}
+                aria-label={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice'}
+                title={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice (separato dal 3D)'}
+                className={`w-9 h-9 flex items-center justify-center rounded-lg border backdrop-blur transition-colors ${sliceContrast ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900/60 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
+              >
+                <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
+                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                  <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
+                  {!sliceContrast && <path d="M3.5 16.5L16.5 3.5" stroke="currentColor" strokeWidth="1.6" />}
+                </svg>
+              </button>
+              {sliceContrast && (
+                <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
+                  <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità slice</p>
+                  <CbctContrastControls
+                    meta={meta}
+                    presets={WINDOW_PRESETS}
+                    windowRange={sliceWindowRange ?? windowRange}
+                    step={sliderStep}
+                    onPreset={applySlicePreset}
+                    onWindow={applySliceWindow}
+                  />
+                  {sliceWindowRange && (
+                    <button
+                      onClick={() => setSliceWindowRange(null)}
+                      className="mt-2 text-[11px] text-sky-700 hover:underline"
+                    >
+                      Uguale al 3D
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1211,7 +1660,9 @@ export default function CbctPage({ onClose }) {
             <div className="absolute bottom-2 left-3 text-xs text-white/70 pointer-events-none">
               {crop.active
                 ? 'Ritaglio: clic per aggiungere punti · doppio clic per chiudere · Esc per annullare'
-                : 'Clic per spostare il cursore · Rotella: zoom sul 3D, scorrimento sulle slice · Tasto destro trascinato per il contrasto'}
+                : sliceLayout
+                  ? `${matching?.previewMesh || adjusting ? 'Goniometro: trascina i cerchi blu per ruotare, il centro per spostare · ' : 'Clic per spostare il cursore · '}Rotella: zoom sul 3D, scorrimento sulle slice · Tasto destro trascinato: zoom + / − sulle slice · Rotella premuta e trascinata: sposta slice e 3D${matchingContrast ? ', contrasto sul 3D' : ''}`
+                  : 'Clic per spostare il cursore · Rotella: zoom sul 3D, scorrimento sulle slice · Rotella premuta e trascinata: sposta il 3D · Tasto destro trascinato per il contrasto'}
             </div>
           )}
         </section>
@@ -1248,7 +1699,7 @@ export default function CbctPage({ onClose }) {
             </section>
 
             <section>
-              <h2 className="text-sm font-semibold text-slate-900 mb-2">Contrasto</h2>
+              <h2 className="text-sm font-semibold text-slate-900 mb-2">{viewHasSlices && sliceWindowRange ? 'Contrasto 3D' : 'Contrasto'}</h2>
               <CbctContrastControls
                 meta={meta}
                 presets={WINDOW_PRESETS}

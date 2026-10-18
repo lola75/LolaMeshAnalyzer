@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 import cbct_matching
+import cbct_segmentation
 import cbct_volume_ops as ops
 
 WORK_ROOT = Path(tempfile.gettempdir()) / "lola_cbct"
@@ -81,6 +82,20 @@ class LoadPathRequest(BaseModel):
 class VolumeOperation(BaseModel):
     op: str
     params: dict = {}
+
+
+class SegmentRequest(BaseModel):
+    low: float
+    high: float
+    seed: list[float] | None = None  # RAS mm: solo la regione collegata a questo punto
+    minIslandMm3: float = 0.0
+    fillHoles: bool = False
+    reduced: bool = True  # anteprima sulla copia ridotta (la stessa griglia mostrata)
+    # solo per il modello 3D
+    spacingMm: float = 0.3
+    smoothing: int = 5
+    maxTriangles: int = 300_000
+    progressId: str | None = None
 
 
 # Avanzamento dei caricamenti in corso (0-100), letto dal frontend con GET /cbct/progress/{id}
@@ -591,6 +606,101 @@ async def match_mesh(session_id: str, request: Request):
         session["lock"].release()
         PROGRESS.pop(progress_id, None)
         mesh_path.unlink(missing_ok=True)
+
+
+# --- Segmentazione (passo 3 del Wizard volume) ---
+
+def _preview_image(session: dict, reduced: bool) -> sitk.Image:
+    """Volume su cui calcolare l'anteprima: la copia ridotta (in cache per versione) o il completo."""
+    image = session["image"]
+    factor = _reduction_factor(image)
+    if not reduced or factor == 1:
+        return image
+    cached = session.get("preview_image")
+    if cached and cached[0] == session["version"]:
+        return cached[1]
+    preview = sitk.BinShrink(image, [factor] * 3)
+    session["preview_image"] = (session["version"], preview)
+    return preview
+
+
+def _segment_preview(session: dict, request: SegmentRequest) -> dict:
+    image = _preview_image(session, request.reduced)
+    mask = cbct_segmentation.threshold_mask(
+        image, request.low, request.high, request.seed, request.minIslandMm3, request.fillHoles)
+    session["segment_count"] = session.get("segment_count", 0) + 1
+    path = session["dir"] / f"segment_mask_{session['segment_count']}.nii.gz"
+    sitk.WriteImage(mask, str(path), useCompression=True)
+    old = session.get("segment_mask_path")
+    if old:
+        Path(old).unlink(missing_ok=True)
+    session["segment_mask_path"] = path
+    return {"maskId": session["segment_count"], "volumeMm3": round(cbct_segmentation.mask_volume_mm3(mask), 1)}
+
+
+@app.post("/cbct/{session_id}/segment/preview")
+async def segment_preview(session_id: str, request: SegmentRequest):
+    """Maschera della soglia (con regione collegata, isole e cavita') da mostrare sopra la CBCT."""
+    session = _get_session(session_id)
+    if not session["lock"].acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Un'altra operazione e' in corso su questo volume.")
+    try:
+        return await run_in_threadpool(_segment_preview, session, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MemoryError:
+        raise HTTPException(status_code=507, detail="Memoria insufficiente per l'anteprima della segmentazione.")
+    finally:
+        session["lock"].release()
+
+
+@app.get("/cbct/{session_id}/segment/mask.nii.gz")
+def segment_mask(session_id: str):
+    session = _get_session(session_id)
+    path = session.get("segment_mask_path")
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Nessuna anteprima di segmentazione.")
+    return FileResponse(path, media_type="application/octet-stream", filename="mask.nii.gz")
+
+
+@app.post("/cbct/{session_id}/segment/mesh")
+async def segment_mesh(session_id: str, request: SegmentRequest):
+    """Modello 3D (STL binario, RAS mm) della zona selezionata, calcolato sul volume completo."""
+    session = _get_session(session_id)
+    if not session["lock"].acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Un'altra operazione e' in corso su questo volume.")
+    report = _progress_reporter(request.progressId)
+    session["segment_model_count"] = session.get("segment_model_count", 0) + 1
+    path = session["dir"] / f"segment_model_{session['segment_model_count']}.stl"
+    try:
+        stats = await run_in_threadpool(
+            cbct_segmentation.build_mesh, session["image"], request.low, request.high, request.seed,
+            request.minIslandMm3, request.fillHoles, request.spacingMm, request.smoothing,
+            request.maxTriangles, path, report)
+        old = session.get("segment_model_path")
+        if old:
+            Path(old).unlink(missing_ok=True)
+        session["segment_model_path"] = path
+        return {**stats, "modelId": session["segment_model_count"]}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MemoryError:
+        raise HTTPException(status_code=507, detail="Memoria insufficiente: usa la qualita' Normale o riduci il volume.")
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Errore nella creazione del modello: {exc}")
+    finally:
+        session["lock"].release()
+        PROGRESS.pop(request.progressId, None)
+
+
+@app.get("/cbct/{session_id}/segment/model.stl")
+def segment_model(session_id: str):
+    session = _get_session(session_id)
+    path = session.get("segment_model_path")
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Nessun modello creato.")
+    return FileResponse(path, media_type="application/octet-stream", filename="model.stl")
 
 
 @app.delete("/cbct/{session_id}")

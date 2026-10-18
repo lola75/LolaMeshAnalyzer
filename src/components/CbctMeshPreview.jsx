@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef } from 'react'
 import { Niivue, NVMesh, SLICE_TYPE } from '@niivue/niivue'
 import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
+import { attachRenderDragPan } from '../utils/niivueRenderPan'
 import { fixRenderDepthRange } from '../utils/niivueRenderDepth'
 import { enableTwoSidedMeshes } from '../utils/niivueTwoSidedMeshes'
 import { attachRenderPointPicker } from '../utils/niivuePicking'
@@ -31,6 +32,7 @@ export default function CbctMeshPreview({ buffer, fileName, color, backColor = D
     nvRef.current = nv
     if (!interactive) nv.opts.dragMode = 0
     const detachWheelZoom = interactive ? attachRenderWheelZoom(nv, canvasRef.current) : () => {}
+    const detachRenderPan = interactive ? attachRenderDragPan(nv, canvasRef.current) : () => {}
     const detachPicker = interactive
       ? attachRenderPointPicker(nv, canvasRef.current, (mm) => onPickRef.current?.(mm))
       : () => {}
@@ -44,6 +46,7 @@ export default function CbctMeshPreview({ buffer, fileName, color, backColor = D
     return () => {
       cancelled = true
       detachWheelZoom()
+      detachRenderPan()
       detachPicker()
       nvRef.current = null
       try {
