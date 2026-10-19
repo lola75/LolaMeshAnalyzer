@@ -1,0 +1,6 @@
+# Segmentazione automatica CBCT (DentalSegmentator) - ambiente separato .venv_seg2, Python 3.11
+# PyTorch si installa a parte dall'indice di pytorch.org (CUDA se c'e' una scheda NVIDIA,
+# altrimenti CPU): vedi InstallaTutto.ps1. Versioni verificate il 2026-10-19.
+torch==2.14.1
+nnunetv2==2.8.1
+SimpleITK==2.5.6
