@@ -19,6 +19,8 @@ import {
 } from '../utils/brushOffset'
 import { createMirrorGizmo, mirrorGeometry, mirrorMatrix } from '../utils/mirrorMesh'
 import { mergeGeometries, saveMeshFile } from '../utils/stlExport'
+import useMeshFreeform from './useMeshFreeform'
+import MeshFreeformPanel from './MeshFreeformPanel'
 import {
   flipNormals,
   deleteSelectedTriangles,
@@ -304,6 +306,10 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const brushSceneRef = useRef(null)
   const brushFrameRef = useRef({ id: 0, event: null })
   const brushDataRef = useRef(null)
+  // Free Form (three-mesh-bvh): pennelli di modellazione sulla mesh scelta all'apertura
+  const [showFreeformPanel, setShowFreeformPanel] = useState(false)
+  const [freeformIndex, setFreeformIndex] = useState(0)
+  const [freeformSettings, setFreeformSettings] = useState({ brush: 'add', radius: 2, strength: 0.5 })
   brushDataRef.current = brushData
   // Applica modifiche: salvataggio della mesh finale
   const [showApplyDialog, setShowApplyDialog] = useState(false)
@@ -378,6 +384,19 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     toCamera.transformDirection(sceneMesh.matrixWorld.clone().invert())
     return [toCamera.x, toCamera.y, toCamera.z]
   }
+  const freeform = useMeshFreeform({
+    active: showFreeformPanel,
+    meshIndex: freeformIndex,
+    meshes,
+    meshesRef,
+    sceneRef,
+    cameraRef,
+    rendererRef,
+    brushStateRef,
+    settings: freeformSettings,
+  })
+  // pennellate non ancora applicate: gli altri strumenti restano bloccati
+  const freeformDirty = showFreeformPanel && freeform.strokes > 0
   const holeMarkersRef = useRef([])
   const holeClickRef = useRef(null)
   const fillHoleByIdRef = useRef(null)
@@ -1325,6 +1344,29 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
   }, [cutTool, brushData, meshes, areaCut, areaOffset, areaInvert])
 
+  // Free Form: Ctrl+Z annulla l'ultimo tratto
+  useEffect(() => {
+    if (!showFreeformPanel) return undefined
+    const onKeyDown = (event) => {
+      if (!((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z')) return
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select')) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      freeform.undo()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [showFreeformPanel, freeform])
+
+  // Free Form: si chiude quando si apre un altro strumento (le pennellate sono gia' applicate:
+  // con pennellate in prova gli altri strumenti sono bloccati)
+  useEffect(() => {
+    if (!showFreeformPanel) return
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none') {
+      setShowFreeformPanel(false)
+    }
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode])
+
   // Taglia con Area / Linea: Ctrl+Z, Canc o Backspace tolgono l'ultimo punto
   // (su una linea chiusa riaprono prima il contorno)
   useEffect(() => {
@@ -1985,6 +2027,59 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     setShowOffsetPanel(true)
   }
 
+  // --- Free Form ---
+  const applyFreeform = () => {
+    const geometry = freeform.result()
+    const sceneMesh = meshesRef.current[freeformIndex]
+    const target = meshes[freeformIndex]
+    if (!geometry || !target) return
+    // stessa inquadratura di prima: la mesh non si sposta nella vista
+    const normalization = sceneMesh?.userData.normalization
+    const displayFrame = normalization ? { center: normalization.center.toArray(), scale: normalization.scale } : target.displayFrame
+    pushHistory(`Free Form (${freeform.strokes} ${freeform.strokes === 1 ? 'tratto' : 'tratti'})`, { meshIndex: freeformIndex, previous: target.geometry, repaired: geometry })
+    setMeshes((prev) => prev.map((m, i) => (i === freeformIndex ? { ...m, geometry, ...(displayFrame ? { displayFrame } : {}) } : m)))
+    freeform.adopt(geometry)
+  }
+
+  const toggleFreeformPanel = () => {
+    if (showFreeformPanel) {
+      if (freeformDirty) {
+        if (window.confirm('Applicare le modifiche del Free Form?\nOK = applica, Annulla = scarta le pennellate.')) applyFreeform()
+        else freeform.discard()
+      }
+      setShowFreeformPanel(false)
+      return
+    }
+    if (meshes.length === 0 || !meshes[selectedMeshIndex]) return
+    commitPendingEdits()
+    setRepairMode(false)
+    setShowSimplifyPanel(false)
+    setShowIsolatedPanel(false)
+    setShowOffsetPanel(false)
+    setShowMirrorPanel(false)
+    setRemeshCompare(null)
+    if (alignmentMode !== 'none') {
+      setAlignmentMode('none')
+      resetPointPairs()
+    }
+    setManualMoveMode(false)
+    setCutTool(null)
+    setBorderTool(null)
+    // raggio iniziale: 3% della diagonale della mesh
+    const box = new THREE.Box3().setFromBufferAttribute(meshes[selectedMeshIndex].geometry.getAttribute('position'))
+    const diagonal = box.min.distanceTo(box.max)
+    setFreeformSettings((s) => ({ ...s, radius: Math.max(0.1, Math.round(diagonal * 0.03 * 10) / 10) }))
+    setFreeformIndex(selectedMeshIndex)
+    setShowFreeformPanel(true)
+  }
+
+  const freeformDiagonal = useMemo(() => {
+    const geometry = showFreeformPanel ? meshes[freeformIndex]?.geometry : null
+    if (!geometry) return 1
+    const box = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'))
+    return box.min.distanceTo(box.max)
+  }, [showFreeformPanel, freeformIndex, meshes])
+
   // Applica / Ignora modifiche: ogni strumento lavora sulla mesh già modificata dagli
   // strumenti precedenti; qui la mesh finale viene salvata e riportata nel visualizzatore.
   const openApplyDialog = () => {
@@ -2019,7 +2114,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
   // geometria della mesh con le eventuali modifiche in anteprima
   const finalGeometryOf = (index) => {
-    let result = meshes[index].geometry
+    let result = (freeformDirty && index === freeformIndex && freeform.result()) || meshes[index].geometry
     if (pendingOffset?.meshIndex === index) {
       result = buildOffsetGeometry(brushData, offsetDistance, offsetModeFor(brushSceneRef.current?.sceneMesh, offsetFromView))
     }
@@ -2057,7 +2152,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // Ignora modifiche: annulla tutte le modifiche e torna alla mesh com'era all'apertura del modificatore
   const discardChanges = () => {
     const changed =
-      meshes.length !== 1 || meshes[0]?.geometry !== geometry || editHistory.length > 0 || !!pendingOffset || !!pendingMirror
+      meshes.length !== 1 || meshes[0]?.geometry !== geometry || editHistory.length > 0 || !!pendingOffset || !!pendingMirror || freeformDirty
     if (!changed) {
       setMessage('ℹ️ Nessuna modifica da annullare: la mesh è già quella originale.')
       setTimeout(() => setMessage(''), 4000)
@@ -2065,6 +2160,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
     if (!window.confirm('Annullare tutte le modifiche e tornare alla mesh originale?')) return
 
+    if (freeformDirty) freeform.discard()
+    setShowFreeformPanel(false)
     setRepairMode(false)
     setSelectedHoleId(null)
     setRepairMessage('')
@@ -2510,8 +2607,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     leave: () => {},
   }
 
-  brushHandlersRef.current =
-    cutTool === 'Area' ? areaHandlers : cutTool === 'Linea' ? curveHandlers : cutTool && cutTool !== 'Pennello' ? drawHandlers : {
+  brushHandlersRef.current = showFreeformPanel
+    ? freeform.handlers
+    : cutTool === 'Area' ? areaHandlers : cutTool === 'Linea' ? curveHandlers : cutTool && cutTool !== 'Pennello' ? drawHandlers : {
     down: (event) => {
       const hit = pickBrushHit(event)
       if (!hit) return false
@@ -4562,6 +4660,18 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           )
         })()}
 
+        {showFreeformPanel && meshes[freeformIndex] && (
+          <MeshFreeformPanel
+            meshName={meshes[freeformIndex].name}
+            diagonal={freeformDiagonal}
+            settings={freeformSettings}
+            onSettings={(patch) => setFreeformSettings((s) => ({ ...s, ...patch }))}
+            freeform={freeform}
+            onApply={applyFreeform}
+            onClose={toggleFreeformPanel}
+          />
+        )}
+
         {showOffsetPanel && alignmentMode !== 'point-align' && meshes[selectedMeshIndex] && (() => {
           const ready = brushData?.meshIndex === selectedMeshIndex
           const diagonal = ready ? brushData.mesh.diagonal : 1
@@ -5516,7 +5626,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
               <button
                 type="button"
                 onClick={undoLastEdit}
-                disabled={!lastEditUndoable()}
+                disabled={!lastEditUndoable() || freeformDirty}
                 className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
                 title="Annulla l'ultima modifica"
               >
@@ -5554,6 +5664,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             'Rimuovi componenti isolati',
             'Offset con pennello',
             'Specchia',
+            'Free Form',
           ].map((label) => (
             <button
               key={label}
@@ -5573,6 +5684,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                             ? toggleOffsetPanel
                             : label === 'Specchia'
                               ? toggleMirrorPanel
+                              : label === 'Free Form'
+                                ? toggleFreeformPanel
                               : label === 'Inverti Normali'
                                 ? invertNormals
                                 : label === 'Riempi buchi'
@@ -5580,12 +5693,14 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                                   : undefined
               }
               disabled={
-                (label === 'Ricostruisci Mesh' ||
+                (freeformDirty && label !== 'Free Form') ||
+                ((label === 'Ricostruisci Mesh' ||
                   label === 'Remesh Isotropic' ||
                   label === 'Semplifica Mesh' ||
                   (label === 'Riempi buchi' && !fillingHoles)) &&
-                (isRebuilding || serverOperationBusy || repairBusy || meshes.length === 0)
+                  (isRebuilding || serverOperationBusy || repairBusy || meshes.length === 0))
               }
+              title={freeformDirty && label !== 'Free Form' ? 'Applica o annulla prima le pennellate del Free Form' : undefined}
               aria-pressed={
                 label === 'Ripara mesh'
                   ? repairMode
@@ -5597,14 +5712,17 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                         ? showOffsetPanel
                         : label === 'Specchia'
                           ? showMirrorPanel
-                          : undefined
+                          : label === 'Free Form'
+                            ? showFreeformPanel
+                            : undefined
               }
               className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left text-[15px] shadow-sm transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 ${
                 (label === 'Ripara mesh' && repairMode) ||
                 (label === 'Semplifica Mesh' && showSimplifyPanel) ||
                 (label === 'Rimuovi componenti isolati' && showIsolatedPanel) ||
                 (label === 'Offset con pennello' && showOffsetPanel) ||
-                (label === 'Specchia' && showMirrorPanel)
+                (label === 'Specchia' && showMirrorPanel) ||
+                (label === 'Free Form' && showFreeformPanel)
                   ? 'border-sky-400 bg-sky-50 text-sky-800'
                   : 'border-slate-200 bg-white text-slate-700'
               }`}
@@ -5637,7 +5755,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 key={label}
                 type="button"
                 onClick={() => toggleCutTool(label)}
-                disabled={meshes.length === 0}
+                disabled={meshes.length === 0 || freeformDirty}
                 aria-pressed={cutTool === label}
                 className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left text-[15px] shadow-sm transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 ${
                   cutTool === label ? 'border-sky-400 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700'

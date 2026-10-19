@@ -7,5 +7,5 @@ numpy==2.4.6
 SimpleITK==2.5.6
 # Matching STL su DICOM (allineamento mesh - CBCT): RANSAC + FPFH e ICP
 open3d==0.19.0
-# Segmentazione: superficie del modello 3D (marching cubes)
+# Segmentazione metodo 2: superficie dei modelli 3D delle strutture (marching cubes)
 scikit-image==0.25.2

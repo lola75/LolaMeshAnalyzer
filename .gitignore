@@ -35,3 +35,6 @@ __pycache__/
 .venv*/
 mio server/.venv*/
 *.whl
+
+# Segmentazione metodo 2 (test): pesi DentalSegmentator scaricati da Zenodo
+mio server/.models_seg2/

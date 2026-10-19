@@ -8,6 +8,7 @@ import { fixRenderDepthRange } from '../utils/niivueRenderDepth'
 import { enableTwoSidedMeshes } from '../utils/niivueTwoSidedMeshes'
 import { enableSliceTiles, attachSliceTileDragZoom, resetSliceTileZoom } from '../utils/niivueSliceTiles'
 import { enableSliceWindow } from '../utils/niivueSliceWindow'
+import { enableRenderOpacity } from '../utils/niivueRenderOpacity'
 import { attachRenderPointPicker } from '../utils/niivuePicking'
 import CbctVolumeWizard, { Switch } from './CbctVolumeWizard'
 import CbctBoxOverlay, { FULL_BOX, NO_CLIP_PLANES, boxClipPlanes, boxCornersMm } from './CbctBoxOverlay'
@@ -20,7 +21,7 @@ import CbctMeshPreview from './CbctMeshPreview'
 import CbctContrastControls from './CbctContrastControls'
 import CbctPointMarkers from './CbctPointMarkers'
 import CbctMeshGoniometer from './CbctMeshGoniometer'
-import CbctSegmentationStep from './CbctSegmentationStep'
+import CbctSegmentation2Step, { SEG2_STRUCTURES } from './CbctSegmentation2Step'
 import MeshModifier from './MeshModifier'
 import * as THREE from 'three'
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
@@ -48,13 +49,13 @@ const WINDOW_PRESETS = [
   { id: 'soft', label: 'Tessuti molli', range: (lo, hi) => [lo, lo + 0.5 * (hi - lo)] },
 ]
 
-const WIZARD_STEPS = ['Volume', 'Allineamento mesh', 'Segmentazione']
+const WIZARD_STEPS = ['Volume', 'Allineamento mesh', 'Segmentazione metodo 2']
 const STEP_VOLUME = 0
 const STEP_MESH = 1
-const STEP_SEGMENTATION = 2
+const STEP_SEGMENTATION2 = 2 // DentalSegmentator: si toglie insieme a CbctSegmentation2Step
+const SEG2_OPACITY = 0.5
+const SEG2_IDLE = { status: null, checking: false, result: null, visible: { 1: true, 2: true, 3: true, 4: true, 5: true }, quality: 'normal', spacingMm: 0.3, smoothing: 10, maxTriangles: 300_000 }
 const POSITION_SEGMENTATION = 'segmentation'
-const SEGMENT_PREVIEW_DELAY_MS = 400
-const SEGMENT_MASK_OPACITY = 0.45
 const MESH_FILE_TYPES = '.stl,.ply,.obj'
 // Colore di ogni tipo di oggetto 3D nel visualizzatore (stesso ordine di OBJECT_TYPES)
 const OBJECT_COLORS = [
@@ -241,6 +242,9 @@ export default function CbctPage({ onClose }) {
   const [matchingContrast, setMatchingContrast] = useState(false)
   // Contrasto delle slice 2D (4 viste, viste singole e Matching), separato dal 3D (null = uguale al 3D)
   const [sliceContrast, setSliceContrast] = useState(false)
+  // Pannelli dei pulsanti sul 3D fuori dal Matching ('contrast' | 'opacity') e trasparenza del 3D
+  const [renderPanel, setRenderPanel] = useState(null)
+  const [renderTransparency, setRenderTransparency] = useState(0) // 0-100 %
   const [sliceWindowRange, setSliceWindowRange] = useState(DEFAULT_SLICE_WINDOW)
   // per il contrasto col tasto destro (callback di NiiVue creata una volta sola)
   const windowRangeRef = useRef(null)
@@ -251,11 +255,9 @@ export default function CbctPage({ onClose }) {
   const [editingObject, setEditingObject] = useState(null)
   // Matching manuale (goniometro) di un oggetto dell'elenco: { id, delta } con delta = correzione
   const [adjusting, setAdjusting] = useState(null)
-  // Segmentazione (passo 3): parametri, anteprima della maschera (volume sovrapposto in NiiVue)
-  const [seg, setSeg] = useState(null)
-  const [segPreview, setSegPreview] = useState({ busy: false, volumeMm3: null })
-  const segMaskRef = useRef(null)
-  const segRequestRef = useRef(0)
+  // Segmentazione metodo 2 (test DentalSegmentator): stato e volume delle etichette sovrapposto
+  const [seg2, setSeg2] = useState(SEG2_IDLE)
+  const seg2LabelsRef = useRef(null)
   const getMainNv = useCallback(() => nvRef.current, [])
   const getMainCanvas = useCallback(() => canvasRef.current, [])
   const [orient, setOrient] = useState(ORIENT_IDLE)
@@ -279,6 +281,7 @@ export default function CbctPage({ onClose }) {
     enableTwoSidedMeshes(nv) // scansioni aperte visibili anche dal retro
     enableSliceTiles(nv) // slice del Matching in riquadri uguali, ognuno col suo zoom
     enableSliceWindow(nv) // contrasto delle slice separato da quello del 3D
+    enableRenderOpacity(nv) // trasparenza del volume solo nel 3D
     nv.setSliceType(VIEWS.find((v) => v.id === DEFAULT_VIEW).sliceType)
     // Contrasto cambiato col tasto destro nel visualizzatore: aggiorna i cursori. Se il
     // trascinamento e' partito su una slice e le slice hanno un contrasto proprio, il nuovo
@@ -496,8 +499,8 @@ export default function CbctPage({ onClose }) {
     setOrient(ORIENT_IDLE)
     closeBox()
     removeAllObjects()
-    removeSegmentMask()
-    setSeg(null)
+    removeSeg2Labels()
+    setSeg2((s) => ({ ...SEG2_IDLE, status: s.status }))
     setStep(STEP_VOLUME)
     setVolumeVisible(true)
     startLoading(serverFrom > 0 ? 'Invio dei file al server...' : 'Lettura della serie DICOM...', 0)
@@ -591,6 +594,14 @@ export default function CbctPage({ onClose }) {
   }
 
   const closeSliceContrast = () => setSliceContrast(false)
+
+  // Trasparenza del volume nel 3D (le slice restano opache)
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv) return
+    nv.renderOpacity = 1 - renderTransparency / 100
+    nv.drawScene()
+  }, [renderTransparency])
 
   // Texture delle slice ricreata a ogni cambio di contrasto, vista o volume (meta e useReduced)
   useEffect(() => {
@@ -748,148 +759,80 @@ export default function CbctPage({ onClose }) {
 
   const goToStep = (index) => {
     if (index === STEP_MESH) changeView('render')
-    if (index === STEP_SEGMENTATION) {
-      changeView('multi') // slice per scegliere il punto della regione, 3D per il risultato
-      if (!seg && meta) setSeg(defaultSegmentation())
+    if (index === STEP_SEGMENTATION2) {
+      changeView('multi')
+      checkSeg2Status()
     } else {
-      removeSegmentMask()
+      removeSeg2Labels()
     }
     setError(null)
     setNotice(null)
     setStep(index)
   }
 
-  // --- Passo 3: Segmentazione ---
+  // --- Passo 3: Segmentazione metodo 2, DentalSegmentator ---
 
-  const segmentPresets = meta ? [
-    // osso: dal contrasto minimo attuale del 3D (lo stesso usato per il Matching)
-    { id: 'bone', label: 'Osso', range: () => ({ low: windowRange?.[0] ?? DEFAULT_WINDOW[0], high: meta.max }) },
-    { id: 'teeth', label: 'Denti / smalto', range: () => ({ low: meta.suggestedWindow[0] + 0.7 * (meta.suggestedWindow[1] - meta.suggestedWindow[0]), high: meta.max }) },
-  ] : []
-
-  const defaultSegmentation = () => ({
-    low: windowRange?.[0] ?? DEFAULT_WINDOW[0],
-    high: meta.max,
-    seed: null,
-    minIslandMm3: 100,
-    fillHoles: false,
-    maskVisible: true,
-    type: 'Bone Surface',
-    spacingMm: 0.3,
-    smoothing: 5,
-    maxTriangles: 300_000,
-  })
-
-  const removeSegmentMask = () => {
-    const nv = nvRef.current
-    if (nv && segMaskRef.current && nv.volumes.includes(segMaskRef.current)) nv.removeVolume(segMaskRef.current)
-    segMaskRef.current = null
-    segRequestRef.current += 1 // le anteprime in corso non vanno piu' mostrate
-    setSegPreview({ busy: false, volumeMm3: null })
+  const checkSeg2Status = async () => {
+    if (seg2.status?.ready) return
+    setSeg2((s) => ({ ...s, checking: true }))
+    try {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, '/cbct/seg2/status'))
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      const status = await response.json()
+      setSeg2((s) => ({ ...s, status, checking: false }))
+    } catch (err) {
+      setSeg2((s) => ({ ...s, status: { ready: false, python: true, model: true, error: describeError(err) }, checking: false }))
+    }
   }
 
-  const segmentBody = (current) => ({
-    low: current.low,
-    high: current.high,
-    seed: current.seed,
-    minIslandMm3: current.seed ? 0 : current.minIslandMm3,
-    fillHoles: current.fillHoles,
-    reduced: Boolean(useReduced && meta?.reduced),
-    spacingMm: current.spacingMm,
-    smoothing: current.smoothing,
-    maxTriangles: current.maxTriangles,
+  const seg2Lut = (visible) => ({
+    R: [0, ...SEG2_STRUCTURES.map((x) => x.color[0])],
+    G: [0, ...SEG2_STRUCTURES.map((x) => x.color[1])],
+    B: [0, ...SEG2_STRUCTURES.map((x) => x.color[2])],
+    A: [0, ...SEG2_STRUCTURES.map((x) => (visible[x.label] ? 255 : 0))],
+    I: [0, ...SEG2_STRUCTURES.map((x) => x.label)],
+    labels: ['', ...SEG2_STRUCTURES.map((x) => x.name)],
   })
 
-  // Anteprima: maschera calcolata dal server sulla griglia mostrata, sovrapposta in rosso
-  const segPreviewKey = seg && meta && step === STEP_SEGMENTATION
-    ? JSON.stringify([meta.id, meta.version, useReduced, seg.low, seg.high, seg.seed, seg.minIslandMm3, seg.fillHoles])
-    : null
-  useEffect(() => {
-    if (!segPreviewKey) return undefined
-    const requestId = ++segRequestRef.current
-    const timer = setTimeout(async () => {
-      const nv = nvRef.current
-      if (!nv) return
-      setSegPreview((p) => ({ ...p, busy: true }))
-      try {
-        const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/preview`), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(segmentBody(seg)),
-        })
-        if (response.status === 409) return // operazione in corso: si riprova alla prossima modifica
-        if (!response.ok) throw new Error(await readErrorDetail(response))
-        const result = await response.json()
-        const maskResponse = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/mask.nii.gz?m=${result.maskId}`))
-        if (!maskResponse.ok) throw new Error(await readErrorDetail(maskResponse))
-        const buffer = await maskResponse.arrayBuffer()
-        if (requestId !== segRequestRef.current) return
-        const mask = await NVImage.new(buffer, 'mask.nii.gz', 'red', seg.maskVisible ? SEGMENT_MASK_OPACITY : 0, null, 0.5, 1)
-        if (requestId !== segRequestRef.current) return
-        if (segMaskRef.current && nv.volumes.includes(segMaskRef.current)) nv.removeVolume(segMaskRef.current)
-        segMaskRef.current = mask
-        nv.addVolume(mask)
-        setError(null)
-        setSegPreview({ busy: false, volumeMm3: result.volumeMm3 })
-      } catch (err) {
-        if (requestId === segRequestRef.current) {
-          setError(describeError(err))
-          setSegPreview({ busy: false, volumeMm3: null })
-        }
-      } finally {
-        if (requestId === segRequestRef.current) setSegPreview((p) => ({ ...p, busy: false }))
-      }
-    }, SEGMENT_PREVIEW_DELAY_MS)
-    return () => clearTimeout(timer)
-  }, [segPreviewKey])
-
-  // Mostra/nasconde la zona selezionata senza ricalcolarla
-  useEffect(() => {
+  const removeSeg2Labels = () => {
     const nv = nvRef.current
-    const mask = segMaskRef.current
-    if (!nv || !mask || !seg) return
-    const index = nv.volumes.indexOf(mask)
-    if (index > 0) nv.setOpacity(index, seg.maskVisible ? SEGMENT_MASK_OPACITY : 0)
-  }, [seg?.maskVisible])
-
-  const changeSegmentation = (patch) => setSeg((current) => ({ ...current, ...patch }))
-
-  const segmentSeedFromCursor = () => {
-    const nv = nvRef.current
-    if (!nv?.volumes.length) return
-    const mm = nv.frac2mm(nv.scene.crosshairPos, 0, true)
-    changeSegmentation({ seed: [mm[0], mm[1], mm[2]].map((v) => Math.round(v * 100) / 100) })
+    if (nv && seg2LabelsRef.current && nv.volumes.includes(seg2LabelsRef.current)) nv.removeVolume(seg2LabelsRef.current)
+    seg2LabelsRef.current = null
   }
 
-  const createSegmentModel = async () => {
+  const showSeg2Labels = async (previewId, visible) => {
     const nv = nvRef.current
-    if (!seg || !meta || !nv) return
+    if (!nv || !meta) return
+    const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/seg2/labels.nii.gz?p=${previewId}`))
+    if (!response.ok) throw new Error(await readErrorDetail(response))
+    const image = await NVImage.new(await response.arrayBuffer(), 'labels.nii.gz', 'gray', SEG2_OPACITY)
+    image.setColormapLabel(seg2Lut(visible))
+    removeSeg2Labels()
+    seg2LabelsRef.current = image
+    nv.addVolume(image)
+  }
+
+  const runSeg2 = async () => {
+    if (!meta) return
     setError(null)
     setNotice(null)
-    startLoading('Creazione del modello 3D...', 0)
+    startLoading('Segmentazione automatica...', 0)
     const progressId = newProgressId()
-    const stopPolling = pollServerProgress(progressId, 0, 90)
+    const stopPolling = pollServerProgress(progressId, 0, 95)
     try {
-      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/mesh`), {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/seg2/run`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...segmentBody(seg), progressId }),
+        body: JSON.stringify({ quality: seg2.quality, reduced: Boolean(useReduced && meta.reduced), progressId }),
       })
       stopPolling()
       if (!response.ok) throw new Error(await readErrorDetail(response))
-      const stats = await response.json()
-      startLoading('Apertura del modello...', 93)
-      const modelResponse = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/segment/model.stl?m=${stats.modelId}`))
-      if (!modelResponse.ok) throw new Error(await readErrorDetail(modelResponse))
-      const buffer = await modelResponse.arrayBuffer()
-      const color = objectColor(seg.type)
-      const fileName = `Segmentazione ${seg.type}.stl`
-      const mesh = await NVMesh.readMesh(buffer, fileName, nv.gl, 1, new Uint8Array([...color, 255]))
-      nv.addMesh(mesh)
-      const object = { id: mesh.id, type: seg.type, fileName, color, position: POSITION_SEGMENTATION, matrix: IDENTITY, mesh, visible: true }
-      setObjects((list) => [...list, object])
-      setSelectedObjectId(object.id)
-      setNotice(`${seg.type} creato: ${stats.triangles.toLocaleString('it-IT')} triangoli, voxel ${stats.spacing} mm. È negli Oggetti 3D (passo 2).`)
+      const result = await response.json()
+      startLoading('Anteprima delle strutture...', 97)
+      await showSeg2Labels(result.previewId, seg2.visible)
+      setSeg2((s) => ({ ...s, result: { ...result, version: meta.version } }))
+      const found = result.labels.filter((l) => l.volumeMm3 > 0).length
+      setNotice(`Segmentazione automatica completata in ${result.seconds} s (${result.device}): ${found} strutture trovate.`)
     } catch (err) {
       setError(describeError(err))
     } finally {
@@ -897,6 +840,60 @@ export default function CbctPage({ onClose }) {
       stopLoading()
     }
   }
+
+  const toggleSeg2Structure = (label) => {
+    const visible = { ...seg2.visible, [label]: !seg2.visible[label] }
+    setSeg2((s) => ({ ...s, visible }))
+    const image = seg2LabelsRef.current
+    const nv = nvRef.current
+    if (image && nv?.volumes.includes(image)) {
+      image.setColormapLabel(seg2Lut(visible))
+      nv.updateGLVolume()
+    }
+  }
+
+  const createSeg2Model = async (structure) => {
+    const nv = nvRef.current
+    if (!meta || !nv) return
+    setError(null)
+    setNotice(null)
+    startLoading(`Modello 3D: ${structure.name}...`, 0)
+    const progressId = newProgressId()
+    const stopPolling = pollServerProgress(progressId, 0, 90)
+    try {
+      const response = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/seg2/mesh`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: structure.label, spacingMm: seg2.spacingMm, smoothing: seg2.smoothing, maxTriangles: seg2.maxTriangles, progressId }),
+      })
+      stopPolling()
+      if (!response.ok) throw new Error(await readErrorDetail(response))
+      const stats = await response.json()
+      startLoading('Apertura del modello...', 93)
+      const modelResponse = await fetch(apiUrl(CBCT_SERVER_URL, `/cbct/${meta.id}/seg2/model.stl?m=${stats.modelId}`))
+      if (!modelResponse.ok) throw new Error(await readErrorDetail(modelResponse))
+      const fileName = `DentalSegmentator ${structure.name}.stl`
+      const mesh = await NVMesh.readMesh(await modelResponse.arrayBuffer(), fileName, nv.gl, 1, new Uint8Array([...structure.color, 255]))
+      nv.addMesh(mesh)
+      const object = { id: mesh.id, type: structure.name, fileName, color: structure.color, position: POSITION_SEGMENTATION, matrix: IDENTITY, mesh, visible: true }
+      setObjects((list) => [...list, object])
+      setSelectedObjectId(object.id)
+      setNotice(`${structure.name}: modello creato (${stats.triangles.toLocaleString('it-IT')} triangoli). È negli Oggetti 3D (passo 2).`)
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      stopPolling()
+      stopLoading()
+    }
+  }
+
+  // Volume cambiato (ritaglio, nuova CBCT...): le strutture trovate non valgono piu'
+  useEffect(() => {
+    if (seg2.result && meta && seg2.result.version !== meta.version) {
+      removeSeg2Labels()
+      setSeg2((s) => ({ ...s, result: null }))
+    }
+  }, [meta?.version, meta?.id])
 
   // Pulsanti "Matching" e "Mantieni posizione originale" della finestra Importa oggetto:
   // funzioni da progettare, chiamate a ogni clic con il tipo di oggetto scelto in quel momento.
@@ -1245,6 +1242,72 @@ export default function CbctPage({ onClose }) {
   const canLoad = serverStatus === 'online' && !busy && !crop.active && !orient.active && !box.active
   const sliderStep = meta && meta.max - meta.min > 100 ? 1 : 0.01
 
+  // Pulsanti quadrati sopra il visualizzatore (contrasto 2D/3D, trasparenza 3D)
+  const toolButtonClass = (active) => `relative w-9 h-9 flex items-center justify-center rounded-lg border backdrop-blur transition-colors ${active ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900/60 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`
+  const contrastIcon = (active, tag) => (
+    <>
+      <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
+        <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
+        {!active && <path d="M3.5 16.5L16.5 3.5" stroke="currentColor" strokeWidth="1.6" />}
+      </svg>
+      <span className="absolute -bottom-1 -right-1 px-0.5 rounded bg-slate-800 text-[8px] leading-tight font-semibold text-white">{tag}</span>
+    </>
+  )
+  const opacityIcon = (
+    <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="10" height="10" rx="1.5" fill="currentColor" opacity="0.9" />
+      <rect x="7.5" y="7.5" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2 1.5" />
+    </svg>
+  )
+  const opacityButton = (
+    <button
+      onClick={() => setRenderPanel((p) => (p === 'opacity' ? null : 'opacity'))}
+      aria-pressed={renderPanel === 'opacity'}
+      aria-label="Trasparenza del volume nel 3D"
+      title="Trasparenza del volume nel 3D (le slice non cambiano)"
+      className={toolButtonClass(renderPanel === 'opacity' || renderTransparency > 0)}
+    >
+      {opacityIcon}
+    </button>
+  )
+  const opacityPanel = renderPanel === 'opacity' && (
+    <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
+      <p className="text-xs font-semibold text-slate-900 mb-2">Trasparenza 3D</p>
+      <label className="flex flex-col gap-1 text-xs text-slate-600">
+        <span>Trasparenza: {renderTransparency}%</span>
+        <input
+          type="range"
+          min={0}
+          max={95}
+          step={1}
+          value={renderTransparency}
+          onChange={(e) => setRenderTransparency(Number(e.target.value))}
+        />
+      </label>
+      {renderTransparency > 0 && (
+        <button onClick={() => setRenderTransparency(0)} className="mt-2 text-[11px] text-sky-700 hover:underline">
+          Volume opaco
+        </button>
+      )}
+      <p className="text-[11px] text-slate-500 mt-2">Vale solo per il rendering 3D della CBCT: gli oggetti 3D restano pieni.</p>
+    </div>
+  )
+  const contrast3DPanel = meta && (
+    <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
+      <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità 3D</p>
+      <CbctContrastControls
+        meta={meta}
+        presets={WINDOW_PRESETS}
+        windowRange={windowRange}
+        step={sliderStep}
+        onPreset={applyPreset}
+        onWindow={applyWindow}
+      />
+      <p className="text-[11px] text-slate-500 mt-2">Anche col tasto destro trascinato sulla vista 3D.</p>
+    </div>
+  )
+
   return (
     <div className="alignment-workspace fixed inset-0 z-50 flex flex-col">
       <div className="sticky top-0 z-20 bg-white border-b border-slate-200 p-4">
@@ -1351,7 +1414,7 @@ export default function CbctPage({ onClose }) {
               className="hidden"
               onChange={(e) => importObjectFile(e.target.files?.[0])}
             />
-            {step === STEP_SEGMENTATION && seg && meta ? (
+            {step === STEP_SEGMENTATION2 && meta ? (
               <>
                 {error && (
                   <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
@@ -1359,18 +1422,13 @@ export default function CbctPage({ onClose }) {
                 {notice && !error && (
                   <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">{notice}</div>
                 )}
-                <CbctSegmentationStep
-                  meta={meta}
-                  seg={seg}
-                  step={sliderStep}
+                <CbctSegmentation2Step
+                  seg2={seg2}
                   busy={busy}
-                  previewing={segPreview.busy}
-                  volumeMm3={segPreview.volumeMm3}
-                  presets={segmentPresets}
-                  onChange={changeSegmentation}
-                  onSeedFromCursor={segmentSeedFromCursor}
-                  onClearSeed={() => changeSegmentation({ seed: null })}
-                  onCreate={createSegmentModel}
+                  onRun={runSeg2}
+                  onToggle={toggleSeg2Structure}
+                  onChange={(patch) => setSeg2((s) => ({ ...s, ...patch }))}
+                  onCreate={createSeg2Model}
                 />
               </>
             ) : step === STEP_MESH ? (
@@ -1477,7 +1535,7 @@ export default function CbctPage({ onClose }) {
             </button>
             <button
               onClick={() => goToStep(step + 1)}
-              disabled={step === STEP_SEGMENTATION || !canGoToMesh}
+              disabled={step === WIZARD_STEPS.length - 1 || !canGoToMesh}
               className="px-3 py-2 rounded-lg text-sm bg-sky-600 text-white hover:bg-sky-700 disabled:bg-slate-300"
             >
               Passo successivo
@@ -1546,53 +1604,56 @@ export default function CbctPage({ onClose }) {
           )}
           {sliceLayout && !busy && (
             <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-2">
-              <button
-                onClick={toggleMatchingContrast}
-                aria-pressed={matchingContrast}
-                aria-label={matchingContrast ? 'Disattiva contrasto e luminosità' : 'Attiva contrasto e luminosità'}
-                title={matchingContrast ? 'Disattiva contrasto e luminosità' : 'Attiva contrasto e luminosità'}
-                className={`w-9 h-9 flex items-center justify-center rounded-lg border backdrop-blur transition-colors ${matchingContrast ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900/60 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
-              >
-                <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
-                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                  <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
-                  {!matchingContrast && <path d="M3.5 16.5L16.5 3.5" stroke="currentColor" strokeWidth="1.6" />}
-                </svg>
-              </button>
-              {matchingContrast && meta && (
-                <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
-                  <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità 3D</p>
-                  <CbctContrastControls
-                    meta={meta}
-                    presets={WINDOW_PRESETS}
-                    windowRange={windowRange}
-                    step={sliderStep}
-                    onPreset={applyPreset}
-                    onWindow={applyWindow}
-                  />
-                  <p className="text-[11px] text-slate-500 mt-2">Anche col tasto destro trascinato sulla vista 3D.</p>
-                </div>
-              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={toggleMatchingContrast}
+                  aria-pressed={matchingContrast}
+                  aria-label={matchingContrast ? 'Disattiva contrasto e luminosità del 3D' : 'Attiva contrasto e luminosità del 3D'}
+                  title={matchingContrast ? 'Disattiva contrasto e luminosità del 3D' : 'Attiva contrasto e luminosità del 3D'}
+                  className={toolButtonClass(matchingContrast)}
+                >
+                  {contrastIcon(matchingContrast, '3D')}
+                </button>
+                {opacityButton}
+              </div>
+              {matchingContrast && contrast3DPanel}
+              {opacityPanel}
             </div>
           )}
-          {viewHasSlices && !busy && meta && !crop.active && (
+          {!busy && meta && !crop.active && (viewHasSlices || view === 'render') && (
             <div
               className="absolute left-3 z-10 flex flex-col items-start gap-2"
               style={{ top: sliceLayout ? `calc(${MATCH_TOP * 100}% + 0.75rem)` : '0.75rem' }}
             >
-              <button
-                onClick={() => setSliceContrast((on) => !on)}
-                aria-pressed={sliceContrast}
-                aria-label={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice'}
-                title={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice (separato dal 3D)'}
-                className={`w-9 h-9 flex items-center justify-center rounded-lg border backdrop-blur transition-colors ${sliceContrast ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-900/60 border-white/20 text-white/60 hover:text-white hover:bg-slate-800/70'}`}
-              >
-                <svg viewBox="0 0 20 20" className="w-5 h-5" aria-hidden="true">
-                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                  <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" />
-                  {!sliceContrast && <path d="M3.5 16.5L16.5 3.5" stroke="currentColor" strokeWidth="1.6" />}
-                </svg>
-              </button>
+              <div className="flex gap-2">
+                {viewHasSlices && (
+                  <button
+                    onClick={() => setSliceContrast((on) => !on)}
+                    aria-pressed={sliceContrast}
+                    aria-label={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice'}
+                    title={sliceContrast ? 'Chiudi contrasto e luminosità delle slice' : 'Contrasto e luminosità delle slice (separato dal 3D)'}
+                    className={toolButtonClass(sliceContrast)}
+                  >
+                    {contrastIcon(sliceContrast, '2D')}
+                  </button>
+                )}
+                {!sliceLayout && (view === 'render' || view === 'multi') && (
+                  <>
+                    <button
+                      onClick={() => setRenderPanel((p) => (p === 'contrast' ? null : 'contrast'))}
+                      aria-pressed={renderPanel === 'contrast'}
+                      aria-label="Contrasto e luminosità del 3D"
+                      title="Contrasto e luminosità del 3D"
+                      className={toolButtonClass(renderPanel === 'contrast')}
+                    >
+                      {contrastIcon(renderPanel === 'contrast', '3D')}
+                    </button>
+                    {opacityButton}
+                  </>
+                )}
+              </div>
+              {!sliceLayout && renderPanel === 'contrast' && contrast3DPanel}
+              {!sliceLayout && opacityPanel}
               {sliceContrast && (
                 <div className="w-56 p-3 rounded-xl bg-white/95 border border-slate-200 shadow-xl">
                   <p className="text-xs font-semibold text-slate-900 mb-2">Contrasto e luminosità slice</p>
