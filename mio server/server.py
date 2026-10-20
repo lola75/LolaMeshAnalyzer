@@ -9,8 +9,9 @@ import meshlib.mrmeshpy as mr
 import numpy as np
 import uuid
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+
+from local_security import protect_local_server
 
 app = FastAPI(
     title="MeshLib Local Mesh Server",
@@ -18,14 +19,8 @@ app = FastAPI(
     version="0.1.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Mesh-Stats"],
-)
+# Solo l'app (pagine servite dal PC stesso) puo' usare il server: vedi local_security.py
+protect_local_server(app, allow_credentials=True, expose_headers=["X-Mesh-Stats"])
 
 SUPPORTED_EXTENSIONS = {"stl", "obj", "ply", "glb", "gltf"}
 

@@ -22,12 +22,12 @@ import numpy as np
 import SimpleITK as sitk
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 import cbct_matching
+from local_security import protect_local_server
 import cbct_volume_ops as ops
 
 WORK_ROOT = Path(tempfile.gettempdir()) / "lola_cbct"
@@ -43,13 +43,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="LolaMeshAnalyzer CBCT Server", version="0.1.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Solo l'app (pagine servite dal PC stesso) puo' usare il server: vedi local_security.py
+protect_local_server(app)
 
 SESSIONS: dict[str, dict] = {}
 SESSIONS_LOCK = threading.Lock()
