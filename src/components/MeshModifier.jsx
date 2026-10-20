@@ -20,11 +20,13 @@ import {
 import { createMirrorGizmo, mirrorGeometry, mirrorMatrix } from '../utils/mirrorMesh'
 import { mergeGeometries, saveMeshFile } from '../utils/stlExport'
 import useMeshFreeform from './useMeshFreeform'
+import { transferVertexColors } from '../utils/meshColorTransfer'
 import MeshFreeformPanel from './MeshFreeformPanel'
+import MeshExtraToolsPanel, { EXTRA_TOOLS } from './MeshExtraToolsPanel'
+import { prepareBoundaries, smoothBoundary, newBoundaryLoops, nearestBoundaryVertex, boundarySegment, bridgeBoundaries, straightenBorderPreview, applyStraightenBorder } from '../utils/boundaryTools'
 import {
   flipNormals,
   deleteSelectedTriangles,
-  straightenBorder,
   rebuildBorder,
   extendBorder,
 } from '../utils/meshEditing'
@@ -61,6 +63,7 @@ function Toggle({ checked, onChange, label }) {
 }
 
 const AREA_COLOR = 0xd946ef // Taglia con Area: contorno e parte da eliminare
+const AREA_STEP_MM = 5 // Taglia con Area: tasto premuto e trascinato = un punto ogni 5 mm
 const CURVE_COLOR = 0xdc2626 // Taglia con Linea: contorno e punti
 const CURVE_END_COLOR = 0x22c55e // Taglia con Linea: ultimo punto
 
@@ -84,7 +87,8 @@ const getMarkerTexture = (fill, stroke) => {
   return markerTextures.get(key)
 }
 
-const HOLE_COLORS = { hole: 0xdc2626, selected: 0xf97316, outer: 0x94a3b8 }
+const REPAIR_REMESH_REACH_MM = 1.5 // Ripara mesh: larghezza della zona rifatta intorno a ogni foro
+const HOLE_COLORS = { hole: 0xdc2626, selected: 0xf97316, outer: 0x22c55e } // bordo esterno in verde, come in Raddrizza bordo
 const hexColor = (value) => `#${value.toString(16).padStart(6, '0')}`
 
 // Etichette dei fori, uguali nella vista 3D e nel pannello: il bordo esterno
@@ -310,6 +314,14 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const [showFreeformPanel, setShowFreeformPanel] = useState(false)
   const [freeformIndex, setFreeformIndex] = useState(0)
   const [freeformSettings, setFreeformSettings] = useState({ brush: 'add', radius: 2, strength: 0.5 })
+  // Strumenti in stile Meshmixer: 'smoothBoundary' | 'makeSolid' | 'bridge' (null = chiusi)
+  const [extraTool, setExtraTool] = useState(null)
+  const [extraParams, setExtraParams] = useState({ iterations: 10, rings: 2, loops: 'longest', voxelSize: 0.2, offset: 0, maxTriangles: 400000, width: 4 })
+  const [makeSolidBusy, setMakeSolidBusy] = useState(false)
+  const [bridgePoints, setBridgePoints] = useState({ a: null, b: null, error: null })
+  // Taglia con Lazo / Pennello: levigatura automatica del bordo lasciato dal taglio
+  const [cutSmoothBorder, setCutSmoothBorder] = useState(true)
+  const [cutSmoothIntensity, setCutSmoothIntensity] = useState(15)
   brushDataRef.current = brushData
   // Applica modifiche: salvataggio della mesh finale
   const [showApplyDialog, setShowApplyDialog] = useState(false)
@@ -356,6 +368,11 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const areaCutRef = useRef(null)
   areaCutRef.current = areaCut
   const areaDragRef = useRef(null) // indice del punto trascinato
+  const areaDrawRef = useRef(false) // tasto premuto su uno spazio vuoto: punti automatici
+  // Ctrl + rotella: diametro del pennello (gestore aggiornato a ogni render) e ultimo
+  // movimento del mouse, per ridisegnare subito il cerchio con il nuovo diametro
+  const brushWheelRef = useRef(null)
+  const lastMouseEventRef = useRef(null)
   const [areaOffset, setAreaOffset] = useState(0)
   const [areaDepth, setAreaDepth] = useState(5)
   const [areaMaterialCut, setAreaMaterialCut] = useState(false)
@@ -365,8 +382,12 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // Modifica Bordo: 'Raddrizza bordo' | 'Ricostruisci bordo' | 'Estendi bordo'
   const [borderTool, setBorderTool] = useState(null)
   const [borderOnlyOuter, setBorderOnlyOuter] = useState(true)
-  const [borderIterations, setBorderIterations] = useState(10)
-  const [borderStrength, setBorderStrength] = useState(0.5)
+  // Raddrizza bordo (come "Tensione Bordo" di RealGuide): bordi scelti, forza e distanza di lisciatura
+  const [straightenLoops, setStraightenLoops] = useState(null)
+  const [straightenStrength, setStraightenStrength] = useState(10)
+  const [straightenDistance, setStraightenDistance] = useState(1)
+  const [straightenRemesh, setStraightenRemesh] = useState(true) // remesh isotropico della fascia prima di raddrizzare
+  const [repairRemesh, setRepairRemesh] = useState(true) // Ripara mesh: remesh intorno ai fori prima di chiuderli
   const [borderPasses, setBorderPasses] = useState(3)
   const [borderDistance, setBorderDistance] = useState(1)
   const [borderDirection, setBorderDirection] = useState('outward')
@@ -773,6 +794,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
 
     const onMouseMove = (e) => {
+      lastMouseEventRef.current = e
       if (brushStateRef.current.active) {
         brushHandlersRef.current?.move(e)
         if (brushStateRef.current.painting) return
@@ -799,15 +821,19 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         return
       }
 
-      // Camera orbit control when started on background
+      // Rotazione libera della vista (trackball) quando si trascina sullo sfondo: in orizzontale
+      // attorno all'asse verticale dello schermo, in verticale attorno a quello orizzontale.
+      // Nessun blocco ai poli: si puo' girare sopra e sotto la mesh senza fermarsi.
       if (cameraControlRef.current) {
         const camera = cameraRef.current
-        const sph = cameraSphericalRef.current
         const orbitSpeed = 0.005
-        sph.theta -= deltaX * orbitSpeed
-        sph.phi -= deltaY * orbitSpeed
-        sph.phi = Math.max(0.01, Math.min(Math.PI - 0.01, sph.phi))
-        camera.position.setFromSpherical(sph)
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+        const rotation = new THREE.Quaternion()
+          .setFromAxisAngle(up, -deltaX * orbitSpeed)
+          .multiply(new THREE.Quaternion().setFromAxisAngle(right, -deltaY * orbitSpeed))
+        camera.position.applyQuaternion(rotation)
+        camera.up.copy(up.applyQuaternion(rotation))
         camera.lookAt(0, 0, 0)
         return
       }
@@ -902,6 +928,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
     const onWheel = (e) => {
       e.preventDefault()
+      // Ctrl + rotella con un pennello attivo: diametro invece dello zoom
+      if (e.ctrlKey && brushWheelRef.current?.(e.deltaY)) return
       // Always zoom the camera along its forward vector
       const camera = cameraRef.current
       if (!camera) return
@@ -1362,10 +1390,18 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // con pennellate in prova gli altri strumenti sono bloccati)
   useEffect(() => {
     if (!showFreeformPanel) return
-    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none') {
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || extraTool) {
       setShowFreeformPanel(false)
     }
-  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode])
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, extraTool])
+
+  // Strumenti Meshmixer: si chiudono quando si apre un altro strumento
+  useEffect(() => {
+    if (!extraTool) return
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || showFreeformPanel) {
+      setExtraTool(null)
+    }
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, showFreeformPanel])
 
   // Taglia con Area / Linea: Ctrl+Z, Canc o Backspace tolgono l'ultimo punto
   // (su una linea chiusa riaprono prima il contorno)
@@ -1635,7 +1671,12 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       lineGeometry.setPositions(points)
       const outline = new Line2(
         lineGeometry,
-        new LineMaterial({ color, linewidth: hole.id === selectedHoleId ? 5 : 3.5, resolution, depthTest: false, transparent: true, toneMapped: false })
+        // solo le parti visibili all'osservatore (come Raddrizza bordo): la mesh davanti nasconde la
+        // linea; spinta un poco verso la telecamera per non confondersi con la superficie
+        new LineMaterial({
+          color, linewidth: hole.id === selectedHoleId ? 5 : 3.5, resolution, depthTest: true,
+          polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -40, transparent: true, toneMapped: false,
+        })
       )
       outline.renderOrder = 10
       outline.raycast = () => {} // solo visivo: non deve intercettare i clic sulla mesh
@@ -1679,10 +1720,37 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     if (!target || target.geometry !== holeAnalysis.geometry) return
 
     setRepairBusy(true)
-    setRepairMessage('⏳ Chiusura dei fori in corso...')
-    // calcolo in background: con fori grandi può durare a lungo e la pagina deve restare utilizzabile
-    fillHolesAsync(target.geometry, holeIds, fillMode, (done, total) => {
-      if (total > 1) setRepairMessage(`⏳ Chiusura dei fori in corso... ${done}/${total}`)
+    // 1. (facoltativo) remesh isotropico intorno ai bordi dei fori: triangoli regolari prima di chiudere;
+    //    i fori si ritrovano sulla mesh nuova dal baricentro piu' vicino
+    const prepare = async () => {
+      if (!repairRemesh) return { geometry: target.geometry, ids: holeIds, note: '' }
+      setRepairMessage('⏳ Remesh isotropico intorno ai fori...')
+      const P = holeAnalysis.mesh.positions
+      const chosen = holeAnalysis.holes.filter((hole) => holeIds.includes(hole.id))
+      const points = []
+      for (const hole of chosen) for (const v of hole.loop) points.push([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]])
+      const { geometry, stats } = await remeshNearPoints(target.geometry, target.name, points, REPAIR_REMESH_REACH_MM)
+      const holes = analyzeHoles(geometry).holes
+      const ids = [...new Set(chosen.map((hole) => {
+        let best = null
+        let bestDistance = Infinity
+        for (const h of holes) {
+          const d = Math.hypot(...h.centroid.map((value, k) => value - hole.centroid[k]))
+          if (d < bestDistance) { bestDistance = d; best = h }
+        }
+        return best?.id
+      }).filter((id) => id != null))]
+      if (!ids.length) throw new Error('fori non ritrovati dopo il remesh.')
+      return { geometry, ids, note: ` Remesh di ${(stats.regionTriangles ?? 0).toLocaleString('it-IT')} triangoli intorno ai fori.` }
+    }
+    let prepared
+    // 2. chiusura dei fori, calcolata in background: con fori grandi può durare a lungo
+    prepare().then((ready) => {
+      prepared = ready
+      setRepairMessage('⏳ Chiusura dei fori in corso...')
+      return fillHolesAsync(ready.geometry, ready.ids, fillMode, (done, total) => {
+        if (total > 1) setRepairMessage(`⏳ Chiusura dei fori in corso... ${done}/${total}`)
+      })
     }).then(
       (result) => {
         if (meshesStateRef.current[meshIndex]?.geometry !== target.geometry) {
@@ -1697,7 +1765,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         setMeshes((prev) => prev.map((m, i) => (i === meshIndex ? { ...m, geometry: result.geometry } : m)))
         setSelectedHoleId(null)
         setRepairMessage(
-          `✅ ${result.filledCount === 1 ? '1 foro chiuso' : `${result.filledCount} fori chiusi`} (${result.addedTriangles} triangoli aggiunti).`
+          `✅ ${result.filledCount === 1 ? '1 foro chiuso' : `${result.filledCount} fori chiusi`} (${result.addedTriangles} triangoli aggiunti).${prepared?.note || ''}`
         )
       },
       (err) => {
@@ -1776,6 +1844,27 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }, 30)
   }
 
+  // Remesh isotropico (server mesh) solo della zona entro `reach` mm dai punti dati, con i colori della
+  // mesh di partenza ricopiati sui triangoli nuovi. Usato da Raddrizza bordo e Ripara mesh.
+  const remeshNearPoints = async (geometry, name, points, reach) => {
+    if (!(await ensureServerOnline())) {
+      throw new Error(`${selectedServer.name} non è raggiungibile: avvia il server Python o togli la spunta del remesh.`)
+    }
+    const form = new FormData()
+    form.append('file', new Blob([geometryToBinarySTL(geometry)], { type: 'application/octet-stream' }), `${name || 'mesh'}.stl`)
+    form.append('points', JSON.stringify(points))
+    form.append('reach', String(reach))
+    const response = await fetch(apiUrl(selectedServer.url, '/remesh-near-border'), { method: 'POST', body: form })
+    if (response.status === 404) throw new Error('il server in esecuzione non ha ancora questa funzione: chiudi e riavvia il server Python.')
+    if (!response.ok) {
+      let detail = response.statusText
+      try { detail = (await response.json()).detail || detail } catch { /* risposta non JSON */ }
+      throw new Error(detail)
+    }
+    const stats = JSON.parse(response.headers.get('X-Mesh-Stats') || '{}')
+    return { geometry: transferVertexColors(geometry, loadPLY(await response.arrayBuffer())), stats }
+  }
+
   const ensureServerOnline = async () => {
     if (await checkServerHealth(selectedServer.url)) return true
     const startServer = window.electron?.startMeshServer
@@ -1786,7 +1875,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     return false
   }
 
-  const serverOperationBusy = isRemeshing || isSimplifying
+  const serverOperationBusy = isRemeshing || isSimplifying || makeSolidBusy
 
   // Invia la mesh selezionata al server MeshLib, sostituisce la geometria con il risultato
   // e apre il confronto prima/dopo. Usata da Remesh Isotropic e Semplifica Mesh.
@@ -2072,6 +2161,295 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     setFreeformIndex(selectedMeshIndex)
     setShowFreeformPanel(true)
   }
+
+  // --- Strumenti in stile Meshmixer: Leviga bordo, Crea solido, Ponte ---
+  const toggleExtraTool = (tool) => {
+    if (extraTool === tool) {
+      setExtraTool(null)
+      return
+    }
+    if (meshes.length === 0 || !meshes[selectedMeshIndex]) return
+    commitPendingEdits()
+    setRepairMode(false)
+    setShowSimplifyPanel(false)
+    setShowIsolatedPanel(false)
+    setShowOffsetPanel(false)
+    setShowMirrorPanel(false)
+    setShowFreeformPanel(false)
+    setRemeshCompare(null)
+    if (alignmentMode !== 'none') {
+      setAlignmentMode('none')
+      resetPointPairs()
+    }
+    setManualMoveMode(false)
+    setCutTool(null)
+    setBorderTool(null)
+    setBridgePoints({ a: null, b: null, error: null })
+    setExtraTool(tool)
+  }
+
+  // vertici uniti e bordi aperti della mesh selezionata (Leviga bordo e Ponte)
+  const boundaryData = useMemo(() => {
+    const geometry = (extraTool === 'smoothBoundary' || extraTool === 'bridge' || borderTool === 'Raddrizza bordo') ? meshes[selectedMeshIndex]?.geometry : null
+    if (!geometry) return null
+    try {
+      return prepareBoundaries(geometry)
+    } catch (err) {
+      console.error('Analisi dei bordi non riuscita:', err)
+      return null
+    }
+  }, [extraTool, borderTool, selectedMeshIndex, meshes])
+
+  // sostituisce la mesh selezionata mantenendo l'inquadratura (come Free Form e Taglia con Area)
+  const replaceSelectedGeometry = (geometry, label) => {
+    const index = selectedMeshIndex
+    const target = meshes[index]
+    const normalization = meshesRef.current[index]?.userData.normalization
+    const displayFrame = normalization ? { center: normalization.center.toArray(), scale: normalization.scale } : target.displayFrame
+    pushHistory(label, { meshIndex: index, previous: target.geometry, repaired: geometry })
+    setMeshes((prev) => prev.map((m, i) => (i === index ? { ...m, geometry, ...(displayFrame ? { displayFrame } : {}) } : m)))
+  }
+
+  const applyExtraTool = async () => {
+    try {
+      if (extraTool === 'smoothBoundary') {
+        if (!boundaryData) return
+        const { geometry, loopCount } = smoothBoundary(boundaryData, extraParams)
+        replaceSelectedGeometry(geometry, `Leviga bordo (${extraParams.iterations})`)
+        setMessage(`✅ Bordo levigato (${loopCount === 1 ? '1 bordo' : `${loopCount} bordi`}).`)
+      } else if (extraTool === 'bridge') {
+        const { a, b } = bridgePoints
+        if (!boundaryData || a == null || b == null) return
+        const { geometry, triangles } = bridgeBoundaries(boundaryData, a, b, extraParams.width)
+        replaceSelectedGeometry(geometry, 'Ponte')
+        setBridgePoints({ a: null, b: null, error: null })
+        setMessage(`✅ Ponte creato (${triangles} triangoli).`)
+      } else if (extraTool === 'makeSolid') {
+        const ok = await runServerMeshOperation({
+          endpoint: '/make-solid',
+          fields: { voxel_size: extraParams.voxelSize, offset: extraParams.offset, max_triangles: extraParams.maxTriangles },
+          title: 'Crea solido',
+          setBusy: setMakeSolidBusy,
+          busyText: 'Creazione del solido (server mesh)...',
+          doneText: (stats) => `Solido creato: ${stats.holesClosed} ${stats.holesClosed === 1 ? 'apertura chiusa' : 'aperture chiuse'}, volume ${(stats.volumeMm3 / 1000).toFixed(2)} cm³, ${stats.after.triangles.toLocaleString('it-IT')} triangoli.`,
+        })
+        if (ok) setExtraTool(null) // resta il confronto prima/dopo
+        return
+      }
+    } catch (err) {
+      console.error(`${EXTRA_TOOLS[extraTool]} non riuscito:`, err)
+      if (extraTool === 'bridge') setBridgePoints((p) => ({ ...p, error: err.message }))
+      setMessage(`❌ ${EXTRA_TOOLS[extraTool]} non riuscito: ${err.message}`)
+    }
+    setTimeout(() => setMessage(''), 6000)
+  }
+
+  // --- Raddrizza bordo ---
+  // all'apertura (o con una mesh nuova) e' scelto il bordo piu' lungo, cioe' quello esterno
+  useEffect(() => {
+    if (borderTool !== 'Raddrizza bordo' || !boundaryData) return
+    const valid = straightenLoops?.every((i) => i < boundaryData.loops.length)
+    if (straightenLoops && valid) return
+    const longest = boundaryData.lengths.indexOf(Math.max(...boundaryData.lengths))
+    setStraightenLoops(longest >= 0 ? [longest] : [])
+  }, [borderTool, boundaryData])
+
+  const straightenPreview = useMemo(() => {
+    if (borderTool !== 'Raddrizza bordo' || !boundaryData || !straightenLoops?.length) return null
+    return straightenBorderPreview(boundaryData, straightenLoops, straightenStrength, straightenDistance)
+  }, [borderTool, boundaryData, straightenLoops, straightenStrength, straightenDistance])
+
+  // Anteprima: fascia colorata (rosso sul bordo -> blu al limite della distanza), linea verde del
+  // bordo raddrizzato, grigio i bordi non scelti. Clic vicino a un bordo: lo sceglie o lo toglie.
+  useEffect(() => {
+    if (borderTool !== 'Raddrizza bordo' || !boundaryData) return undefined
+    const sceneMesh = meshesRef.current[selectedMeshIndex]
+    const normalization = sceneMesh?.userData.normalization
+    if (!sceneMesh || !normalization) return undefined
+    brushStateRef.current = { active: true, painting: false }
+    const canvas = rendererRef.current?.domElement
+    if (canvas) canvas.style.cursor = 'pointer'
+    const { center, scale } = normalization
+    const P = boundaryData.mesh.positions
+    const resolution = new THREE.Vector2(canvas?.clientWidth || 1, canvas?.clientHeight || 1)
+    const group = new THREE.Group()
+    const toScene = (x, y, z) => [(x - center.x) * scale, (y - center.y) * scale, (z - center.z) * scale]
+    const lineMaterial = (color, width) => new LineMaterial({
+      color, linewidth: width, resolution, depthTest: true, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -40,
+      transparent: true, toneMapped: false,
+    })
+    const chosen = new Set(straightenLoops || [])
+    boundaryData.loops.forEach((loop, l) => {
+      if (chosen.has(l)) return
+      const points = []
+      for (const v of [...loop, loop[0]]) points.push(...toScene(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]))
+      const geometry = new LineGeometry()
+      geometry.setPositions(points)
+      const line = new Line2(geometry, lineMaterial(0x94a3b8, 2))
+      line.renderOrder = 10
+      line.raycast = () => {}
+      group.add(line)
+    })
+    if (straightenPreview) {
+      // fascia: i triangoli che si spostano, colorati in base allo spostamento reale
+      // (rosso = si sposta di piu', verso il blu = si sposta poco); la scala arriva almeno a 0,3 mm,
+      // cosi' con poca forza la fascia resta fredda e aumentando la forza si accende
+      const { targets, moved, maxMoved } = straightenPreview
+      const ramp = [[0.1, 0.2, 1], [0, 0.85, 1], [0, 0.85, 0.2], [1, 1, 0], [1, 0, 0]]
+      const top = Math.max(maxMoved, 0.3)
+      const color = (d) => {
+        const t = Math.min(1, d / top) * (ramp.length - 1)
+        const i = Math.min(ramp.length - 2, Math.floor(t))
+        const f = t - i
+        return [0, 1, 2].map((k) => ramp[i][k] + (ramp[i + 1][k] - ramp[i][k]) * f)
+      }
+      const MIN_MOVED = 0.005 // mm: sotto non si colora
+      const index = []
+      const I = boundaryData.mesh.indices
+      for (let t = 0; t < I.length; t += 3) {
+        if (moved[I[t]] > MIN_MOVED || moved[I[t + 1]] > MIN_MOVED || moved[I[t + 2]] > MIN_MOVED) index.push(I[t], I[t + 1], I[t + 2])
+      }
+      if (index.length) {
+        const vertexCount = P.length / 3
+        const positions = new Float32Array(P.length)
+        const colors = new Float32Array(P.length)
+        for (let v = 0; v < vertexCount; v++) {
+          positions.set(toScene(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]), v * 3)
+          colors.set(color(moved[v]), v * 3)
+        }
+        const bandGeometry = new THREE.BufferGeometry()
+        bandGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        bandGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+        bandGeometry.setIndex(index)
+        const band = new THREE.Mesh(bandGeometry, new THREE.MeshBasicMaterial({
+          vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
+          polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, toneMapped: false,
+        }))
+        band.renderOrder = 5
+        band.raycast = () => {}
+        group.add(band)
+      }
+      // linea verde: dove andra' il bordo
+      for (const l of straightenLoops) {
+        const loop = boundaryData.loops[l]
+        if (!loop) continue
+        const points = []
+        for (const v of [...loop, loop[0]]) points.push(...toScene(...targets.get(v)))
+        const geometry = new LineGeometry()
+        geometry.setPositions(points)
+        const line = new Line2(geometry, lineMaterial(0x22c55e, 3.5))
+        line.renderOrder = 11
+        line.raycast = () => {}
+        group.add(line)
+      }
+    }
+    sceneMesh.add(group)
+    return () => {
+      brushStateRef.current = { active: false, painting: false }
+      if (canvas) canvas.style.cursor = ''
+      group.removeFromParent()
+      group.children.forEach((child) => {
+        child.geometry.dispose()
+        child.material.dispose()
+      })
+    }
+  }, [borderTool, boundaryData, straightenPreview, straightenLoops, meshes, selectedMeshIndex])
+
+  // Leviga bordo: i bordi aperti evidenziati sulla mesh; verde quelli che verranno levigati
+  useEffect(() => {
+    if (extraTool !== 'smoothBoundary' || !boundaryData) return undefined
+    const sceneMesh = meshesRef.current[selectedMeshIndex]
+    const normalization = sceneMesh?.userData.normalization
+    if (!sceneMesh || !normalization) return undefined
+    const { center, scale } = normalization
+    const P = boundaryData.mesh.positions
+    const canvas = rendererRef.current?.domElement
+    const resolution = new THREE.Vector2(canvas?.clientWidth || 1, canvas?.clientHeight || 1)
+    const longest = boundaryData.lengths.indexOf(Math.max(...boundaryData.lengths))
+    const group = new THREE.Group()
+    boundaryData.loops.forEach((loop, l) => {
+      const selected = extraParams.loops === 'all' || l === longest
+      const points = []
+      for (const v of [...loop, loop[0]]) {
+        points.push((P[v * 3] - center.x) * scale, (P[v * 3 + 1] - center.y) * scale, (P[v * 3 + 2] - center.z) * scale)
+      }
+      const lineGeometry = new LineGeometry()
+      lineGeometry.setPositions(points)
+      const line = new Line2(
+        lineGeometry,
+        new LineMaterial({
+          color: selected ? 0x22c55e : 0x94a3b8,
+          linewidth: selected ? 4 : 2,
+          resolution,
+          // solo le parti visibili all'osservatore: la mesh davanti nasconde la linea; la linea
+          // e' spinta un poco verso la telecamera per non confondersi con la superficie su cui sta
+          depthTest: true,
+          polygonOffset: true,
+          polygonOffsetFactor: -4,
+          polygonOffsetUnits: -40,
+          transparent: true,
+          opacity: selected ? 1 : 0.7,
+          toneMapped: false,
+        })
+      )
+      line.renderOrder = 10
+      line.raycast = () => {}
+      group.add(line)
+    })
+    sceneMesh.add(group)
+    return () => {
+      group.removeFromParent()
+      group.children.forEach((line) => {
+        line.geometry.dispose()
+        line.material.dispose()
+      })
+    }
+  }, [extraTool, boundaryData, extraParams.loops, meshes, selectedMeshIndex])
+
+  // Ponte: i clic sulla mesh scelgono i punti; marcatori e tratti di bordo in anteprima
+  useEffect(() => {
+    if (extraTool !== 'bridge') return undefined
+    brushStateRef.current = { active: true, painting: false }
+    const canvas = rendererRef.current?.domElement
+    if (canvas) canvas.style.cursor = 'crosshair'
+    const sceneMesh = meshesRef.current[selectedMeshIndex]
+    const normalization = sceneMesh?.userData.normalization
+    const objects = []
+    if (boundaryData && sceneMesh && normalization) {
+      const { center, scale } = normalization
+      const P = boundaryData.mesh.positions
+      const toScene = (v) => new THREE.Vector3((P[v * 3] - center.x) * scale, (P[v * 3 + 1] - center.y) * scale, (P[v * 3 + 2] - center.z) * scale)
+      for (const [key, color] of [['a', 0x22c55e], ['b', 0x3b82f6]]) {
+        const v = bridgePoints[key]
+        if (v == null) continue
+        const marker = new THREE.Mesh(
+          new THREE.SphereGeometry(Math.max(0.4, boundaryData.mesh.diagonal * 0.006) * scale, 16, 12),
+          new THREE.MeshBasicMaterial({ color, depthTest: false, toneMapped: false })
+        )
+        marker.position.copy(toScene(v))
+        marker.renderOrder = 30
+        marker.raycast = () => {}
+        const { segment } = boundarySegment(boundaryData, v, extraParams.width)
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(segment.map(toScene)),
+          new THREE.LineBasicMaterial({ color, depthTest: false, toneMapped: false })
+        )
+        line.renderOrder = 30
+        line.raycast = () => {}
+        sceneMesh.add(marker, line)
+        objects.push(marker, line)
+      }
+    }
+    return () => {
+      brushStateRef.current = { active: false, painting: false }
+      if (canvas) canvas.style.cursor = ''
+      for (const object of objects) {
+        object.removeFromParent()
+        object.geometry.dispose()
+        object.material.dispose()
+      }
+    }
+  }, [extraTool, bridgePoints, extraParams.width, boundaryData, meshes, selectedMeshIndex])
 
   const freeformDiagonal = useMemo(() => {
     const geometry = showFreeformPanel ? meshes[freeformIndex]?.geometry : null
@@ -2505,22 +2883,44 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       }
       const point = areaPointOnPlane(area, ray)
       if (!point) return true
-      const next = { ...area, points: [...area.points, point] }
-      areaDragRef.current = next.points.length - 1
-      setAreaCutNow(next)
+      // nuovo punto fisso; trascinando si aggiungono gli altri lungo il percorso del mouse
+      setAreaCutNow({ ...area, points: [...area.points, point] })
+      areaDrawRef.current = true
       return true
     },
     move: (event) => {
-      const index = areaDragRef.current
       const area = currentArea()
-      if (index === null || !area || !brushStateRef.current.painting) return
+      if (!area || !brushStateRef.current.painting) return
       const ray = meshRay(event)
       const point = ray && areaPointOnPlane(area, ray)
       if (!point) return
+      if (areaDrawRef.current) {
+        // un punto ogni AREA_STEP_MM dall'ultimo (coordinate del piano in mm); se il mouse
+        // corre, i punti intermedi si mettono sulla retta tra l'ultimo punto e il mouse
+        const points = [...area.points]
+        let [lx, ly] = points[points.length - 1]
+        let dx = point[0] - lx
+        let dy = point[1] - ly
+        let distance = Math.hypot(dx, dy)
+        if (distance < AREA_STEP_MM) return
+        while (distance >= AREA_STEP_MM) {
+          lx += (dx / distance) * AREA_STEP_MM
+          ly += (dy / distance) * AREA_STEP_MM
+          points.push([lx, ly])
+          dx = point[0] - lx
+          dy = point[1] - ly
+          distance = Math.hypot(dx, dy)
+        }
+        setAreaCutNow({ ...area, points })
+        return
+      }
+      const index = areaDragRef.current
+      if (index === null) return
       setAreaCutNow({ ...area, points: area.points.map((p, i) => (i === index ? point : p)) })
     },
     up: () => {
       areaDragRef.current = null
+      areaDrawRef.current = false
     },
     leave: () => {},
   }
@@ -2607,8 +3007,64 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     leave: () => {},
   }
 
+  const bridgeHandlers = {
+    down: (event) => {
+      const sceneMesh = meshesRef.current[selectedMeshIndex]
+      const normalization = sceneMesh?.userData.normalization
+      const canvas = rendererRef.current?.domElement
+      if (!boundaryData || !sceneMesh || !normalization || !canvas) return false
+      const rect = canvas.getBoundingClientRect()
+      const ndc = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
+      const raycaster = raycasterRef.current
+      raycaster.setFromCamera(ndc, cameraRef.current)
+      const hit = raycaster.intersectObject(sceneMesh, false)[0]
+      if (!hit) return false // sfondo: la vista ruota
+      const { center, scale } = normalization
+      const local = sceneMesh.worldToLocal(hit.point.clone())
+      const point = [local.x / scale + center.x, local.y / scale + center.y, local.z / scale + center.z]
+      const vertex = nearestBoundaryVertex(boundaryData, point, Math.max(2, boundaryData.mesh.diagonal * 0.05))
+      if (vertex == null) {
+        setBridgePoints((p) => ({ ...p, error: 'Nessun bordo aperto vicino al punto cliccato.' }))
+        return true
+      }
+      setBridgePoints((p) => (p.a == null || p.b != null ? { a: vertex, b: null, error: null } : { ...p, b: vertex, error: null }))
+      return true
+    },
+    move: () => {},
+    up: () => {},
+    leave: () => {},
+  }
+
+  const straightenHandlers = {
+    down: (event) => {
+      const sceneMesh = meshesRef.current[selectedMeshIndex]
+      const normalization = sceneMesh?.userData.normalization
+      const canvas = rendererRef.current?.domElement
+      if (!boundaryData || !sceneMesh || !normalization || !canvas) return false
+      const rect = canvas.getBoundingClientRect()
+      const ndc = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
+      const raycaster = raycasterRef.current
+      raycaster.setFromCamera(ndc, cameraRef.current)
+      const hit = raycaster.intersectObject(sceneMesh, false)[0]
+      if (!hit) return false // sfondo: la vista ruota
+      const { center, scale } = normalization
+      const local = sceneMesh.worldToLocal(hit.point.clone())
+      const point = [local.x / scale + center.x, local.y / scale + center.y, local.z / scale + center.z]
+      const vertex = nearestBoundaryVertex(boundaryData, point, Math.max(2, boundaryData.mesh.diagonal * 0.05))
+      if (vertex == null) return false // lontano dai bordi: la vista ruota
+      const [loop] = boundaryData.where.get(vertex)
+      setStraightenLoops((current) => (current?.includes(loop) ? current.filter((l) => l !== loop) : [...(current || []), loop]))
+      return true
+    },
+    move: () => {},
+    up: () => {},
+    leave: () => {},
+  }
+
   brushHandlersRef.current = showFreeformPanel
     ? freeform.handlers
+    : borderTool === 'Raddrizza bordo' ? straightenHandlers
+    : extraTool === 'bridge' ? bridgeHandlers
     : cutTool === 'Area' ? areaHandlers : cutTool === 'Linea' ? curveHandlers : cutTool && cutTool !== 'Pennello' ? drawHandlers : {
     down: (event) => {
       const hit = pickBrushHit(event)
@@ -2636,6 +3092,38 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     },
     leave: () => updateBrushCursor(null, false),
   }
+
+  // Ctrl + rotella: avanti aumenta, indietro diminuisce (10% a scatto, stessi limiti dei cursori)
+  brushWheelRef.current = (deltaY) => {
+    if (deltaY === 0) return false
+    const grow = deltaY < 0
+    const scaled = (value, step, max) => {
+      const next = Math.round((value * (grow ? 1.1 : 1 / 1.1)) / step) * step
+      const moved = next === value ? value + (grow ? step : -step) : next // almeno uno scatto
+      return Math.min(max, Math.max(step, moved))
+    }
+    if (showFreeformPanel && freeform.ready) {
+      const maxRadius = Math.max(1, Math.round(freeformDiagonal * 0.15))
+      const step = maxRadius > 20 ? 0.5 : 0.1
+      setFreeformSettings((current) => ({ ...current, radius: Number(scaled(current.radius, step, maxRadius).toFixed(2)) }))
+      return true
+    }
+    const brushTool = showOffsetPanel || cutTool === 'Pennello'
+    if (!brushTool || !brushData || brushData.meshIndex !== selectedMeshIndex) return false
+    const diagonal = brushData.mesh.diagonal
+    const unit = 10 ** Math.floor(Math.log10(Math.max(diagonal, 1e-6) / 100))
+    const step = unit / 10
+    const maxDiameter = Math.max(unit * 10, Math.ceil((diagonal * 0.3) / unit) * unit)
+    const decimals = Math.max(0, -Math.round(Math.log10(step)))
+    setBrushDiameter((current) => Number(scaled(current, step, maxDiameter).toFixed(decimals)))
+    return true
+  }
+
+  // cerchio del pennello ridisegnato subito dopo un cambio di diametro con la rotella
+  useEffect(() => {
+    const event = lastMouseEventRef.current
+    if (event && brushStateRef.current.active && !brushStateRef.current.painting) brushHandlersRef.current?.move(event)
+  }, [brushDiameter, freeformSettings.radius])
 
   // Cancella / inverti / seleziona tutto
   const changeBrushSelection = (change) => {
@@ -2703,6 +3191,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     setCurveCut(null)
     areaCutRef.current = null
     areaDragRef.current = null
+    areaDrawRef.current = false
     setAreaCut(null)
   }
 
@@ -2724,9 +3213,20 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     if (!target || target.geometry !== brushData.geometry) return
     try {
       const result = deleteSelectedTriangles(brushData)
-      replaceMeshGeometry(meshIndex, target.geometry, result.geometry, `Taglia con ${cutTool}`)
+      let geometry = result.geometry
+      let smoothed = 0
+      // bordo del taglio levigato (come Leviga bordo): solo i bordi nuovi, non quelli che c'erano gia'
+      if (cutSmoothBorder && cutSmoothIntensity > 0) {
+        const data = prepareBoundaries(geometry)
+        const loopIndices = newBoundaryLoops(data, brushData.mesh)
+        if (loopIndices.length) {
+          geometry = smoothBoundary(data, { iterations: cutSmoothIntensity, rings: 2, loopIndices }).geometry
+          smoothed = loopIndices.length
+        }
+      }
+      replaceMeshGeometry(meshIndex, target.geometry, geometry, `Taglia con ${cutTool}${smoothed ? ' + leviga bordo' : ''}`)
       clearCut()
-      showTimedMessage(`✅ Taglio eseguito: ${result.removedTriangles.toLocaleString('it-IT')} triangoli eliminati.`)
+      showTimedMessage(`✅ Taglio eseguito: ${result.removedTriangles.toLocaleString('it-IT')} triangoli eliminati${smoothed ? ', bordo del taglio levigato' : ''}.`)
     } catch (err) {
       console.error('Taglio non riuscito:', err)
       showTimedMessage(`❌ Taglio non riuscito: ${err.message}`)
@@ -2866,13 +3366,39 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     if (!target || borderBusy) return
     setBorderBusy(true)
     setMessage(`⏳ ${borderTool} in corso...`)
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
         let result
         let done
         if (borderTool === 'Raddrizza bordo') {
-          result = straightenBorder(target.geometry, { iterations: borderIterations, strength: borderStrength, onlyOuter: borderOnlyOuter })
-          done = `✅ Bordo raddrizzato (${result.loopCount === 1 ? '1 bordo' : `${result.loopCount} bordi`}).`
+          if (!straightenPreview) throw new Error('Nessun bordo selezionato.')
+          const count = straightenLoops.length
+          let data = boundaryData
+          let loops = straightenLoops
+          let remeshNote = ''
+          if (straightenRemesh) {
+            // 1. remesh isotropico (server mesh) solo della fascia vicino ai bordi scelti
+            setMessage('⏳ Remesh isotropico della zona del bordo...')
+            const P = boundaryData.mesh.positions
+            const borderPoints = []
+            for (const l of straightenLoops) for (const v of boundaryData.loops[l]) borderPoints.push([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]])
+            const reach = Math.max(straightenDistance, 2 * straightenPreview.maxMoved) + 0.5
+            const { geometry: remeshed, stats } = await remeshNearPoints(target.geometry, target.name, borderPoints, reach)
+            // stessi bordi di prima, ritrovati sulla mesh nuova dal punto di bordo piu' vicino
+            data = prepareBoundaries(remeshed)
+            loops = [...new Set(straightenLoops.map((l) => {
+              const v = boundaryData.loops[l][0]
+              const nearest = nearestBoundaryVertex(data, [P[v * 3], P[v * 3 + 1], P[v * 3 + 2]])
+              return nearest == null ? -1 : data.where.get(nearest)[0]
+            }).filter((l) => l >= 0))]
+            if (!loops.length) throw new Error('bordo non ritrovato dopo il remesh.')
+            remeshNote = ` Remesh di ${(stats.regionTriangles ?? 0).toLocaleString('it-IT')} triangoli vicino al bordo.`
+            setMessage('⏳ Raddrizzamento del bordo...')
+          }
+          // 2. forza lisciatura e 3. distanza lisciatura
+          const preview = data === boundaryData ? straightenPreview : straightenBorderPreview(data, loops, straightenStrength, straightenDistance)
+          result = { geometry: applyStraightenBorder(data, preview) }
+          done = `✅ Bordo raddrizzato (${count === 1 ? '1 bordo' : `${count} bordi`}, fascia ${straightenDistance.toLocaleString('it-IT')} mm).${remeshNote}`
         } else if (borderTool === 'Ricostruisci bordo') {
           result = rebuildBorder(target.geometry, { passes: borderPasses })
           done = `✅ Bordo ricostruito: ${result.removedTriangles.toLocaleString('it-IT')} triangoli irregolari eliminati.`
@@ -4374,6 +4900,19 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                         </label>
                       )}
 
+                      <label className="flex items-start gap-2 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={repairRemesh}
+                          onChange={(e) => setRepairRemesh(e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          Remesh isotropico intorno ai fori prima di chiuderli (triangoli regolari sul bordo; circa 2 s in più,
+                          serve il server mesh)
+                        </span>
+                      </label>
+
                       <button
                         type="button"
                         onClick={fillAllHoles}
@@ -4660,6 +5199,28 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           )
         })()}
 
+        {extraTool && meshes[selectedMeshIndex] && (
+          <MeshExtraToolsPanel
+            tool={extraTool}
+            meshName={meshes[selectedMeshIndex].name}
+            busy={makeSolidBusy || serverOperationBusy}
+            params={extraParams}
+            onParams={(patch) => setExtraParams((p) => ({ ...p, ...patch }))}
+            info={{
+              loops: boundaryData?.loops.length,
+              a: bridgePoints.a,
+              b: bridgePoints.b,
+              error: bridgePoints.error,
+              gap: boundaryData && bridgePoints.a != null && bridgePoints.b != null
+                ? Math.hypot(...[0, 1, 2].map((k) => boundaryData.mesh.positions[bridgePoints.a * 3 + k] - boundaryData.mesh.positions[bridgePoints.b * 3 + k]))
+                : null,
+            }}
+            onApply={applyExtraTool}
+            onReset={() => setBridgePoints({ a: null, b: null, error: null })}
+            onClose={() => setExtraTool(null)}
+          />
+        )}
+
         {showFreeformPanel && meshes[freeformIndex] && (
           <MeshFreeformPanel
             meshName={meshes[freeformIndex].name}
@@ -4712,7 +5273,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                     <Toggle checked={offsetSeparate} onChange={setOffsetSeparate} label="Salva come Parti Separate" />
 
                     <div className="grid grid-cols-[130px_1fr] items-center gap-x-3 gap-y-3 text-sm">
-                      <label className="text-slate-600" htmlFor="brush-diameter">Dimensione Strumento</label>
+                      <label className="text-slate-600" htmlFor="brush-diameter" title="Anche con Ctrl + rotella del mouse sulla vista">Dimensione Strumento</label>
                       <div className="flex items-center gap-2">
                         <input
                           id="brush-diameter"
@@ -4883,7 +5444,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const setDiameter = (value) =>
             setBrushDiameter(Math.min(maxDiameter, Math.max(step, Math.round((Number(value) || 0) / step) * step)))
           const help = {
-            Pennello: 'Tieni premuto il tasto sinistro sulla mesh e trascina per colorare la parte da eliminare.',
+            Pennello: 'Tieni premuto il tasto sinistro sulla mesh e trascina per colorare la parte da eliminare. Ctrl + rotella cambia il diametro.',
             Lazo: 'Tieni premuto il tasto sinistro e disegna un contorno libero attorno alla parte da eliminare.',
           }[cutTool]
           // riga con cursore e campo numerico (in mm, salvo `options.unit`)
@@ -5052,8 +5613,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                   ) : (
                     <>
                       <div className="text-xs text-slate-500">
-                        Clicca con il tasto sinistro per aggiungere i punti del contorno; trascina un punto per spostarlo, Ctrl+Z (o Canc) toglie
-                        l&apos;ultimo. Il taglio segue la direzione della vista del primo punto. Per ruotare la vista usa il tasto destro.
+                        Clicca con il tasto sinistro per aggiungere i punti del contorno, oppure tieni premuto e trascina: un punto
+                        ogni {AREA_STEP_MM} mm lungo il percorso. Trascina un punto esistente per spostarlo, Ctrl+Z (o Canc) toglie l&apos;ultimo. Il taglio segue la direzione della vista del primo punto. Per ruotare la vista usa il tasto destro.
                       </div>
 
                       <div className="grid grid-cols-[130px_1fr] items-center gap-x-3 gap-y-3 text-sm">
@@ -5192,6 +5753,33 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                       </button>
                     </div>
 
+                    <div className="space-y-2 rounded-lg border border-slate-200 p-2.5">
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          className="accent-sky-600"
+                          checked={cutSmoothBorder}
+                          onChange={(e) => setCutSmoothBorder(e.target.checked)}
+                        />
+                        Leviga il bordo del taglio
+                      </label>
+                      {cutSmoothBorder && (
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
+                          <span className="w-16">Intensità</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={cutSmoothIntensity}
+                            onChange={(e) => setCutSmoothIntensity(Number(e.target.value))}
+                            className="flex-1 accent-sky-600"
+                          />
+                          <span className="w-8 text-right tabular-nums">{cutSmoothIntensity}</span>
+                        </div>
+                      )}
+                    </div>
+
                     <button
                       type="button"
                       onClick={applyCut}
@@ -5248,7 +5836,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             </>
           )
           const description = {
-            'Raddrizza bordo': 'Leviga il bordo aperto togliendo le irregolarità, senza accorciarlo.',
+            'Raddrizza bordo':
+              'Tende il bordo aperto come un elastico. Linea verde: dove andrà il bordo. Fascia colorata: quanto si sposta la mesh (rosso molto, blu poco).',
             'Ricostruisci bordo':
               'Elimina i triangoli a punta e quelli molto schiacciati lungo il bordo aperto, poi lo leviga leggermente.',
             'Estendi bordo': 'Aggiunge una fascia di triangoli oltre il bordo aperto, lunga la distanza scelta.',
@@ -5273,15 +5862,53 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
               <div className="px-4 py-3 space-y-3">
                 <div className="text-xs text-slate-500">{description}</div>
 
-                {borderTool !== 'Ricostruisci bordo' && (
+                {borderTool === 'Estendi bordo' && (
                   <Toggle checked={borderOnlyOuter} onChange={setBorderOnlyOuter} label="Solo bordo esterno" />
+                )}
+
+                {borderTool === 'Raddrizza bordo' && (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setStraightenLoops(boundaryData ? boundaryData.loops.map((_, i) => i) : [])}
+                        disabled={borderBusy || !boundaryData?.loops.length}
+                        className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Seleziona tutti
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStraightenLoops([])}
+                        disabled={borderBusy || !straightenLoops?.length}
+                        className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Annulla selezione
+                      </button>
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      Bordi selezionati: <span className="font-semibold tabular-nums">{straightenLoops?.length || 0}</span> di{' '}
+                      <span className="tabular-nums">{boundaryData?.loops.length ?? 0}</span> · clic vicino a un bordo per sceglierlo o toglierlo
+                    </div>
+                    <Toggle
+                      checked={straightenRemesh}
+                      onChange={setStraightenRemesh}
+                      label="Remesh della zona prima di raddrizzare"
+                    />
+                    {straightenPreview && (
+                      <div className="text-xs text-slate-600">
+                        Spostamento massimo del bordo:{' '}
+                        <span className="font-semibold tabular-nums text-red-600">{straightenPreview.maxMoved.toFixed(2)} mm</span>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <div className="grid grid-cols-[110px_1fr] items-center gap-x-3 gap-y-3 text-sm">
                   {borderTool === 'Raddrizza bordo' && (
                     <>
-                      {slider('border-iterations', 'Iterazioni', borderIterations, (v) => setBorderIterations(Math.min(100, Math.max(1, Math.round(v)))), 1, 50, 1)}
-                      {slider('border-strength', 'Intensità', borderStrength, (v) => setBorderStrength(Math.min(1, Math.max(0.05, v))), 0.05, 1, 0.05)}
+                      {slider('straighten-strength', 'Forza lisciatura', straightenStrength, (v) => setStraightenStrength(Math.min(30, Math.max(1, Math.round(v)))), 1, 30, 1)}
+                      {slider('straighten-distance', 'Distanza lisciatura', straightenDistance, (v) => setStraightenDistance(Math.min(5, Math.max(0.1, Math.round(v * 100) / 100))), 0.1, 5, 0.05, 'mm')}
                     </>
                   )}
                   {borderTool === 'Ricostruisci bordo' &&
@@ -5313,7 +5940,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 <button
                   type="button"
                   onClick={applyBorderTool}
-                  disabled={borderBusy || (borderTool === 'Estendi bordo' && borderDistance === 0)}
+                  disabled={borderBusy || (borderTool === 'Estendi bordo' && borderDistance === 0) || (borderTool === 'Raddrizza bordo' && !straightenPreview)}
                   className="w-full px-3 py-2.5 rounded-lg bg-sky-600 text-white text-sm font-semibold hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {borderBusy ? '⏳ Elaborazione...' : 'Applica'}
@@ -5665,6 +6292,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             'Offset con pennello',
             'Specchia',
             'Free Form',
+            'Crea solido',
+            'Ponte',
           ].map((label) => (
             <button
               key={label}
@@ -5686,6 +6315,10 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                               ? toggleMirrorPanel
                               : label === 'Free Form'
                                 ? toggleFreeformPanel
+                              : label === 'Crea solido'
+                                ? () => toggleExtraTool('makeSolid')
+                              : label === 'Ponte'
+                                ? () => toggleExtraTool('bridge')
                               : label === 'Inverti Normali'
                                 ? invertNormals
                                 : label === 'Riempi buchi'
@@ -5714,7 +6347,11 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                           ? showMirrorPanel
                           : label === 'Free Form'
                             ? showFreeformPanel
-                            : undefined
+                            : label === 'Crea solido'
+                                ? extraTool === 'makeSolid'
+                                : label === 'Ponte'
+                                  ? extraTool === 'bridge'
+                                  : undefined
               }
               className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left text-[15px] shadow-sm transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 ${
                 (label === 'Ripara mesh' && repairMode) ||
@@ -5722,7 +6359,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 (label === 'Rimuovi componenti isolati' && showIsolatedPanel) ||
                 (label === 'Offset con pennello' && showOffsetPanel) ||
                 (label === 'Specchia' && showMirrorPanel) ||
-                (label === 'Free Form' && showFreeformPanel)
+                (label === 'Free Form' && showFreeformPanel) ||
+                (label === 'Crea solido' && extraTool === 'makeSolid') ||
+                (label === 'Ponte' && extraTool === 'bridge')
                   ? 'border-sky-400 bg-sky-50 text-sky-800'
                   : 'border-slate-200 bg-white text-slate-700'
               }`}
@@ -5773,15 +6412,20 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         <div className="mt-6">
           <h4 className="mb-2 text-[15px] font-semibold text-slate-900">Modifica Bordo</h4>
           <div className="space-y-2.5">
-            {['Raddrizza bordo', 'Ricostruisci bordo', 'Estendi bordo'].map((label) => (
+            {['Raddrizza bordo', 'Ricostruisci bordo', 'Estendi bordo', 'Leviga bordo'].map((label) => {
+              // Leviga bordo e' uno strumento a parte (pannello in stile Meshmixer), gli altri usano borderTool
+              const smooth = label === 'Leviga bordo'
+              const pressed = smooth ? extraTool === 'smoothBoundary' : borderTool === label
+              return (
               <button
                 key={label}
                 type="button"
-                onClick={() => toggleBorderTool(label)}
-                disabled={meshes.length === 0}
-                aria-pressed={borderTool === label}
+                onClick={() => (smooth ? toggleExtraTool('smoothBoundary') : toggleBorderTool(label))}
+                disabled={meshes.length === 0 || freeformDirty}
+                title={freeformDirty ? 'Applica o annulla prima le pennellate del Free Form' : undefined}
+                aria-pressed={pressed}
                 className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left text-[15px] shadow-sm transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 ${
-                  borderTool === label ? 'border-sky-400 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700'
+                  pressed ? 'border-sky-400 bg-sky-50 text-sky-800' : 'border-slate-200 bg-white text-slate-700'
                 }`}
               >
                 <span className="flex items-center gap-3">
@@ -5789,7 +6433,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                   <span>{label}</span>
                 </span>
               </button>
-            ))}
+              )
+            })}
           </div>
         </div>
 

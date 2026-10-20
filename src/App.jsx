@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import FileUploader from './components/FileUploader'
 import MeshViewer from './components/MeshViewer'
 import MetadataEditor from './components/MetadataEditor'
@@ -7,6 +7,8 @@ import ITKPage from './components/ITKPage'
 import MMXDentalPage from './components/MMXDentalPage'
 import SurgeryPage from './components/SurgeryPage'
 import CbctPage from './components/CbctPage'
+import DicomFilterPage from './components/DicomFilterPage'
+import MarkerScanPage from './components/MarkerScanPage'
 import MMXSettings from './components/MMXSettings'
 import SettingsModal from './components/SettingsModal'
 import PasswordPromptModal from './components/PasswordPromptModal'
@@ -15,9 +17,18 @@ import ChatWindow from './components/ChatWindow'
 import ScoreBar from './components/ScoreBar'
 import { ChatProvider } from './contexts/ChatContext'
 
+// Colori delle mesh caricate (la prima ha il colore di sempre)
+const MESH_COLORS = [0xffaa7f, 0x7faaff, 0x9be37f, 0xd38bff, 0xffd166, 0x5fd3c4, 0xff7fa8, 0xb0b8c4]
+
 function AppContent() {
-  const [meshData, setMeshData] = useState(null)
-  const [metadata, setMetadata] = useState(null)
+  // Mesh caricate nel visualizzatore: [{ id, name, geometry, metadata, color }]; la mesh attiva
+  // e' quella mostrata nelle analisi e nei metadati. Visibilita' a parte, per non ridisegnare la scena.
+  const [loadedMeshes, setLoadedMeshes] = useState([])
+  const [activeMeshId, setActiveMeshId] = useState(null)
+  const [meshVisibility, setMeshVisibility] = useState({})
+  const activeMesh = loadedMeshes.find((m) => m.id === activeMeshId) || null
+  const meshData = activeMesh?.geometry || null
+  const metadata = activeMesh?.metadata || null
   const [showSplash, setShowSplash] = useState(true)
   const [invertedNormalsLog, setInvertedNormalsLog] = useState([])
   const [uploadHistory, setUploadHistory] = useState([])
@@ -32,13 +43,59 @@ function AppContent() {
   const [showMMX, setShowMMX] = useState(false)
   const [showSurgery, setShowSurgery] = useState(false)
   const [showCbct, setShowCbct] = useState(false)
+  const [cbctMenuOpen, setCbctMenuOpen] = useState(false)
+  const cbctMenuTimerRef = React.useRef(null)
+  // sottomenu CBCT: si apre al passaggio del mouse e si chiude poco dopo che il mouse si allontana
+  const openCbctMenu = () => {
+    clearTimeout(cbctMenuTimerRef.current)
+    setCbctMenuOpen(true)
+  }
+  const closeCbctMenuSoon = () => {
+    clearTimeout(cbctMenuTimerRef.current)
+    cbctMenuTimerRef.current = setTimeout(() => setCbctMenuOpen(false), 200)
+  }
+  const [showDicomFilter, setShowDicomFilter] = useState(false)
+  const [showMarkerScan, setShowMarkerScan] = useState(false)
   const [showMMXSettings, setShowMMXSettings] = useState(false)
   const dentaxTimerRef = React.useRef(null)
 
   const handleFileLoaded = (data) => {
-    setMeshData(data.geometry)
-    setMetadata(data.metadata)
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setLoadedMeshes((list) => [
+      ...list,
+      { id, name: data.fileName, geometry: data.geometry, metadata: data.metadata, color: MESH_COLORS[list.length % MESH_COLORS.length] },
+    ])
+    setMeshVisibility((v) => ({ ...v, [id]: true }))
+    setActiveMeshId(id)
   }
+
+  const removeLoadedMesh = (id) => {
+    const next = loadedMeshes.filter((m) => m.id !== id)
+    setLoadedMeshes(next)
+    if (id === activeMeshId) setActiveMeshId(next.length ? next[next.length - 1].id : null)
+  }
+
+  const removeAllLoadedMeshes = () => {
+    setLoadedMeshes([])
+    setMeshVisibility({})
+    setActiveMeshId(null)
+  }
+
+  // Modifica Mesh con piu' mesh: la mesh scelta viene sostituita da quella modificata
+  const applyMeshEdit = (id, geometry) => {
+    setLoadedMeshes((list) => list.map((m) => (m.id === id ? { ...m, geometry } : m)))
+    setActiveMeshId(id)
+  }
+
+  // Altre mesh nella vista (oltre a quella attiva) e mesh tra cui scegliere per la modifica
+  const extraMeshes = useMemo(
+    () => loadedMeshes.filter((m) => m.id !== activeMeshId).map((m) => ({ id: m.id, geometry: m.geometry, color: m.color })),
+    [loadedMeshes, activeMeshId]
+  )
+  const editableMeshes = useMemo(
+    () => loadedMeshes.map((m) => ({ id: m.id, name: m.name, geometry: m.geometry, color: m.color })),
+    [loadedMeshes]
+  )
 
   // Registra ogni upload nella cronologia (usata per il punteggio mensile)
   const registerUpload = (data) => {
@@ -80,7 +137,7 @@ function AppContent() {
   }
 
   const handleMetadataChange = (newMetadata) => {
-    setMetadata(newMetadata)
+    setLoadedMeshes((list) => list.map((m) => (m.id === activeMeshId ? { ...m, metadata: newMetadata } : m)))
   }
 
   const registerInvertedNormals = (entry) => {
@@ -320,10 +377,57 @@ function AppContent() {
               <h2>File mesh</h2>
             </div>
             <FileUploader
+              multiple
               onFileLoaded={(data) => { handleFileLoaded(data); registerUpload(data); }}
               onInvertedDetected={registerInvertedNormals}
               showFormatInfo={false}
             />
+            {loadedMeshes.length > 0 && (
+              <div className="mt-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-semibold text-slate-700">Mesh caricate ({loadedMeshes.length})</span>
+                  {loadedMeshes.length > 1 && (
+                    <button onClick={removeAllLoadedMeshes} className="text-[11px] text-slate-500 hover:text-red-600">
+                      Rimuovi tutte
+                    </button>
+                  )}
+                </div>
+                <ul className="flex flex-col gap-1">
+                  {loadedMeshes.map((m) => {
+                    const active = m.id === activeMeshId
+                    const visible = meshVisibility[m.id] !== false
+                    return (
+                      <li
+                        key={m.id}
+                        onClick={() => setActiveMeshId(m.id)}
+                        title={active ? 'Mesh attiva (analisi e metadati)' : 'Clic per renderla la mesh attiva'}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer text-xs ${active ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:bg-slate-50'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={visible}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => setMeshVisibility((v) => ({ ...v, [m.id]: !visible }))}
+                          title={visible ? 'Nascondi' : 'Mostra'}
+                          className="w-3.5 h-3.5 accent-sky-600"
+                        />
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10" style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }} />
+                        <span className={`flex-1 truncate ${visible ? 'text-slate-800' : 'text-slate-400'}`}>{m.name}</span>
+                        {active && <span className="text-[10px] font-semibold text-sky-700">attiva</span>}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); removeLoadedMesh(m.id) }}
+                          title="Rimuovi dalla vista"
+                          aria-label={`Rimuovi ${m.name}`}
+                          className="w-5 h-5 rounded text-slate-400 hover:text-red-600 hover:bg-red-50"
+                        >
+                          ×
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
 
             <div className="workspace-divider" />
             <div className="workspace-section-heading">
@@ -335,10 +439,30 @@ function AppContent() {
                 <span className="workspace-action-icon" aria-hidden="true">↔</span>
                 <span>Allineamento automatico</span>
               </button>
-              <button className="workspace-action" onClick={() => setShowCbct(true)}>
+              <div onMouseEnter={openCbctMenu} onMouseLeave={closeCbctMenuSoon}>
+              <button
+                className="workspace-action"
+                onClick={() => setCbctMenuOpen((open) => !open)}
+                aria-expanded={cbctMenuOpen}
+              >
                 <span className="workspace-action-icon" aria-hidden="true">◫</span>
-                <span>CBCT</span>
+                <span className="flex-1">CBCT</span>
+                <span className="workspace-action-chevron" aria-hidden="true">{cbctMenuOpen ? '▾' : '▸'}</span>
               </button>
+              {cbctMenuOpen && (
+                <div className="workspace-submenu" role="group" aria-label="CBCT">
+                  <button className="workspace-subaction" onClick={() => setShowCbct(true)}>
+                    Apri CBCT
+                  </button>
+                  <button className="workspace-subaction" onClick={() => setShowDicomFilter(true)}>
+                    Filtra immagini DICOM
+                  </button>
+                  <button className="workspace-subaction" onClick={() => setShowMarkerScan(true)}>
+                    Crea Marker Scan
+                  </button>
+                </div>
+              )}
+              </div>
               <button className="workspace-action" onClick={() => setShowMMX(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">◈</span>
                 <span>MMX Dental</span>
@@ -378,14 +502,24 @@ function AppContent() {
             <div className="workspace-viewer-heading">
               <div>
                 <span className="workspace-eyebrow">ANALISI</span>
-                <h2>{metadata?.fileName || 'Visualizzatore 3D'}</h2>
+                <h2>{loadedMeshes.length > 1 ? `${loadedMeshes.length} mesh · attiva: ${metadata?.fileName || activeMesh?.name}` : metadata?.fileName || 'Visualizzatore 3D'}</h2>
               </div>
               {metadata?.fileType && (
                 <span className="workspace-file-type">{metadata.fileType.toUpperCase()}</span>
               )}
             </div>
             {meshData ? (
-              <MeshViewer geometry={meshData} requireEditConsent={editConsentRequired} />
+              <MeshViewer
+                geometry={meshData}
+                requireEditConsent={editConsentRequired}
+                primaryColor={activeMesh.color}
+                primaryVisible={meshVisibility[activeMeshId] !== false}
+                extraMeshes={extraMeshes}
+                extraVisible={meshVisibility}
+                editableMeshes={editableMeshes}
+                editTargetId={activeMeshId}
+                onApplyEdit={applyMeshEdit}
+              />
             ) : (
               <div className="workspace-empty-viewer">
                 <div className="workspace-empty-icon" aria-hidden="true">◇</div>
@@ -421,6 +555,8 @@ function AppContent() {
       {showMMX && <MMXDentalPage onClose={() => setShowMMX(false)} />}
       {showSurgery && <SurgeryPage onClose={() => setShowSurgery(false)} />}
       {showCbct && <CbctPage onClose={() => setShowCbct(false)} />}
+      {showDicomFilter && <DicomFilterPage onClose={() => setShowDicomFilter(false)} />}
+      {showMarkerScan && <MarkerScanPage onClose={() => setShowMarkerScan(false)} />}
       <MMXSettings isOpen={showMMXSettings} onClose={() => setShowMMXSettings(false)} />
 
       <ChatWindow />

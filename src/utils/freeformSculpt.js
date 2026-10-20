@@ -13,6 +13,9 @@ export const FREEFORM_BRUSHES = [
   { id: 'smooth', label: 'Leviga', hint: 'Ammorbidisce la superficie' },
   { id: 'flatten', label: 'Appiattisci', hint: 'Porta la zona su un piano' },
   { id: 'grab', label: 'Sposta', hint: 'Trascina la zona col mouse' },
+  { id: 'inflate', label: 'Gonfia', hint: 'Gonfia la zona lungo le sue normali (Shift: sgonfia)' },
+  { id: 'pinch', label: 'Pizzica', hint: 'Stringe la zona verso il centro del pennello: spigoli più netti (Shift: allarga)' },
+  { id: 'crease', label: 'Solco', hint: 'Incide un solco stretto (Shift: crea una cresta)' },
 ]
 
 const MAX_UNDO = 20
@@ -264,6 +267,37 @@ export function createSculptSession(geometry) {
           P[v] -= nx * d
           P[v + 1] -= ny * d
           P[v + 2] -= nz * d
+        }
+      } else if (brush === 'inflate') {
+        // ogni vertice lungo la propria normale: la zona si gonfia senza appiattirsi
+        const amount = (invert ? -1 : 1) * strength * radius * 0.08
+        for (let i = 0; i < region.length; i += 2) {
+          const v = region[i] * 3
+          const d = amount * region[i + 1]
+          P[v] += normals[v] * d
+          P[v + 1] += normals[v + 1] * d
+          P[v + 2] += normals[v + 2] * d
+        }
+      } else if (brush === 'pinch' || brush === 'crease') {
+        // verso il centro del pennello solo nel piano tangente (Pizzica); Solco in piu' affonda
+        const px = hit.point.x
+        const py = hit.point.y
+        const pz = hit.point.z
+        const k = (brush === 'pinch' && invert ? -1 : 1) * Math.min(1, strength * 0.25)
+        const depth = brush === 'crease' ? (invert ? 1 : -1) * strength * radius * 0.06 : 0
+        for (let i = 0; i < region.length; i += 2) {
+          const v = region[i] * 3
+          const w = region[i + 1]
+          let dx = px - P[v]
+          let dy = py - P[v + 1]
+          let dz = pz - P[v + 2]
+          const along = dx * nx + dy * ny + dz * nz
+          dx -= nx * along
+          dy -= ny * along
+          dz -= nz * along
+          P[v] += dx * k * w + nx * depth * w
+          P[v + 1] += dy * k * w + ny * depth * w
+          P[v + 2] += dz * k * w + nz * depth * w
         }
       }
       bvh.refit()

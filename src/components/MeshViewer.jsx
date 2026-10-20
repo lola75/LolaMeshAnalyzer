@@ -14,7 +14,18 @@ export default function MeshViewer({
   enablePointSelection = false,
   pointSelectionMode = 'modifier',
   primaryVisible = true,
-  secondaryVisible = true
+  secondaryVisible = true,
+  // Piu' mesh nella stessa vista (pagina principale): la mesh "geometry" e' quella attiva
+  // (analisi, triangoli, normali); extraMeshes = altre mesh [{ id, geometry, color }] nello
+  // stesso riferimento, extraVisible = { id: true/false }
+  primaryColor = 0xffaa7f,
+  extraMeshes = null,
+  extraVisible = null,
+  // Modifica Mesh con piu' mesh: elenco [{ id, name, geometry }] da cui scegliere e callback
+  // onApplyEdit(id, geometria modificata); senza, la modifica resta locale come prima
+  editableMeshes = null,
+  editTargetId = null,
+  onApplyEdit = null,
 }) {
   const containerRef = useRef(null)
   const sceneRef = useRef(null)
@@ -23,6 +34,7 @@ export default function MeshViewer({
   const meshRef = useRef(null)
   const secondaryMeshRef = useRef(null)
   const secondaryOverlayRef = useRef(null)
+  const extraMeshRefs = useRef(new Map())
   const textureInputRef = useRef(null)
   const appliedTextureRef = useRef(null)
   const [normalAnalysis, setNormalAnalysis] = useState(null)
@@ -30,6 +42,10 @@ export default function MeshViewer({
   const [showTriangles, setShowTriangles] = useState(false)
   const [showTextureMenu, setShowTextureMenu] = useState(false)
   const [showMeshModifier, setShowMeshModifier] = useState(false)
+  // mesh scelta per il Modificatore quando ce ne sono piu' di una
+  const [showEditChooser, setShowEditChooser] = useState(false)
+  const [editChoiceId, setEditChoiceId] = useState(null)
+  const [editingId, setEditingId] = useState(null)
   const [showEditConsentModal, setShowEditConsentModal] = useState(false)
   // mesh modificata con "Applica modifiche" nel modificatore; torna quella originale se ne arriva una nuova
   const [editedGeometry, setEditedGeometry] = useState(null)
@@ -57,9 +73,22 @@ export default function MeshViewer({
     onPointsChangedRef.current = onPointsChanged
   }, [onPointsChanged])
 
+  const hasEditChoice = Array.isArray(editableMeshes) && editableMeshes.length > 1
+
+  // Dopo il consenso: con piu' mesh si sceglie quale modificare, altrimenti si apre subito
+  const openModifierOrChooser = () => {
+    if (hasEditChoice) {
+      setEditChoiceId(editTargetId ?? editableMeshes[0].id)
+      setShowEditChooser(true)
+      return
+    }
+    setEditingId(editableMeshes?.[0]?.id ?? null)
+    setShowMeshModifier(true)
+  }
+
   const openMeshModifierWithConsent = () => {
     if (!requireEditConsent) {
-      setShowMeshModifier(true)
+      openModifierOrChooser()
       return
     }
     setShowEditConsentModal(true)
@@ -67,8 +96,16 @@ export default function MeshViewer({
 
   const confirmEditConsent = () => {
     setShowEditConsentModal(false)
+    openModifierOrChooser()
+  }
+
+  const confirmEditChoice = () => {
+    setShowEditChooser(false)
+    setEditingId(editChoiceId)
     setShowMeshModifier(true)
   }
+
+  const modifierGeometry = (editingId != null && editableMeshes?.find((m) => m.id === editingId)?.geometry) || geometry
 
   const cancelEditConsent = () => {
     setShowEditConsentModal(false)
@@ -277,7 +314,7 @@ export default function MeshViewer({
           wireframe: false
         })
       : new THREE.MeshStandardMaterial({
-          color: 0xffaa7f,
+          color: primaryColor,
           roughness: 0.6,
           metalness: 0.05,
           envMapIntensity: 1,
@@ -303,7 +340,7 @@ export default function MeshViewer({
     if (isPointCloud(primaryGeometry)) {
       const pointsMat = new THREE.PointsMaterial({
         size: Math.max(0.002, Math.max(primaryGeometry.boundingSphere ? primaryGeometry.boundingSphere.radius * 0.01 : 0.01, 0.002)),
-        color: hasVertexColors ? 0xffffff : 0xffaa7f,
+        color: hasVertexColors ? 0xffffff : primaryColor,
         vertexColors: hasVertexColors || false,
         sizeAttenuation: true,
       })
@@ -360,10 +397,30 @@ export default function MeshViewer({
     }
     secondaryOverlayRef.current = secondaryOverlay
 
+    const extraObjects = []
+    extraMeshRefs.current = new Map()
+    for (const extra of extraMeshes || []) {
+      if (!extra?.geometry) continue
+      const extraGeometry = extra.geometry.clone()
+      const extraHasColors = !!extraGeometry.getAttribute('color')
+      const extraMaterial = new THREE.MeshStandardMaterial({
+        color: extraHasColors ? 0xffffff : extra.color,
+        vertexColors: extraHasColors,
+        roughness: 0.6,
+        metalness: 0.05,
+        side: THREE.DoubleSide,
+      })
+      const extraMesh = new THREE.Mesh(extraGeometry, extraMaterial)
+      extraMesh.visible = extraVisible?.[extra.id] ?? true
+      extraObjects.push(extraMesh)
+      extraMeshRefs.current.set(extra.id, extraMesh)
+    }
+
     const boundingBox = new THREE.Box3().setFromObject(mesh)
     if (secondaryMesh) {
       boundingBox.expandByObject(secondaryMesh)
     }
+    for (const extraMesh of extraObjects) boundingBox.expandByObject(extraMesh)
     const center = boundingBox.getCenter(new THREE.Vector3())
     const size = boundingBox.getSize(new THREE.Vector3())
     const maxDim = Math.max(size.x, size.y, size.z)
@@ -378,6 +435,7 @@ export default function MeshViewer({
       mesh.geometry.translate(-center.x, -center.y, -center.z)
       if (secondaryMesh) secondaryMesh.geometry.translate(-center.x, -center.y, -center.z)
       if (secondaryOverlay) secondaryOverlay.geometry.translate(-center.x, -center.y, -center.z)
+      for (const extraMesh of extraObjects) extraMesh.geometry.translate(-center.x, -center.y, -center.z)
     }
 
     mesh.position.set(0, 0, 0)
@@ -390,6 +448,7 @@ export default function MeshViewer({
     if (secondaryOverlay) {
       pivot.add(secondaryOverlay)
     }
+    for (const extraMesh of extraObjects) pivot.add(extraMesh)
     scene.add(pivot)
     pivotRef.current = pivot
 
@@ -657,13 +716,16 @@ export default function MeshViewer({
       }
       containerRef.current?.removeChild(renderer.domElement)
     }
-  }, [geometry, secondaryGeometry, secondaryColor, secondaryOpacity, preserveWorldCoordinates])
+  }, [geometry, secondaryGeometry, secondaryColor, secondaryOpacity, preserveWorldCoordinates, primaryColor, extraMeshes])
 
   useEffect(() => {
     if (meshRef.current) meshRef.current.visible = primaryVisible
     if (secondaryMeshRef.current) secondaryMeshRef.current.visible = secondaryVisible
     if (secondaryOverlayRef.current) secondaryOverlayRef.current.visible = secondaryVisible
-  }, [primaryVisible, secondaryVisible])
+    extraMeshRefs.current.forEach((extraMesh, id) => {
+      extraMesh.visible = extraVisible?.[id] ?? true
+    })
+  }, [primaryVisible, secondaryVisible, extraVisible, extraMeshes])
 
   const centerMesh = () => {
     const mesh = meshRef.current
@@ -1027,13 +1089,58 @@ export default function MeshViewer({
         </div>
       )}
 
+      {/* Scelta della mesh da modificare (piu' mesh caricate) */}
+      {showEditChooser && hasEditChoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-8">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-slate-200 shadow-2xl">
+            <h3 className="text-lg font-semibold text-slate-900 mb-1">Quale mesh vuoi modificare?</h3>
+            <p className="text-sm text-slate-500 mb-4">Il Modificatore mesh si apre sulla mesh scelta.</p>
+            <ul className="flex flex-col gap-1.5 max-h-72 overflow-y-auto mb-5">
+              {editableMeshes.map((m) => (
+                <li key={m.id}>
+                  <label className={`flex items-center gap-3 px-3 py-2 rounded-xl border cursor-pointer ${editChoiceId === m.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                    <input
+                      type="radio"
+                      name="mesh-to-edit"
+                      className="accent-sky-600"
+                      checked={editChoiceId === m.id}
+                      onChange={() => setEditChoiceId(m.id)}
+                    />
+                    {m.color != null && (
+                      <span className="w-3 h-3 rounded-full shrink-0 border border-black/10" style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }} />
+                    )}
+                    <span className="text-sm text-slate-800 truncate" title={m.name}>{m.name}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowEditChooser(false)}
+                className="px-3 py-2 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200"
+              >
+                Annulla
+              </button>
+              <button
+                onClick={confirmEditChoice}
+                disabled={editChoiceId == null}
+                className="px-3 py-2 rounded-lg bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50"
+              >
+                Modifica
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mesh Modifier Modal */}
       {showMeshModifier && (
-        <MeshModifier 
-          geometry={geometry}
+        <MeshModifier
+          geometry={modifierGeometry}
           onClose={() => setShowMeshModifier(false)}
           onApply={(edited) => {
-            setEditedGeometry(edited)
+            if (onApplyEdit && editingId != null) onApplyEdit(editingId, edited)
+            else setEditedGeometry(edited)
             setShowMeshModifier(false)
           }}
           requireEditConsent={requireEditConsent}

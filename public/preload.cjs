@@ -31,5 +31,8 @@ contextBridge.exposeInMainWorld('electron', {
   },
   selectCbctSource: async ({ kind }) => {
     return await ipcRenderer.invoke('select-cbct-source', { kind })
+  },
+  selectFolder: async ({ title } = {}) => {
+    return await ipcRenderer.invoke('select-folder', { title })
   }
 })

@@ -223,6 +223,16 @@ ipcMain.handle('save-inverted-log', async (event, { defaultPath, content }) => {
   }
 })
 
+// Scelta di una cartella (es. destinazione delle serie DICOM esportate)
+ipcMain.handle('select-folder', async (event, { title } = {}) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: title || 'Scegli una cartella',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (canceled || !filePaths?.length) return { canceled: true }
+  return { canceled: false, path: filePaths[0] }
+})
+
 // Esportazione degli oggetti CBCT: scelta della cartella, poi un file per oggetto.
 // Un file gia' presente non viene sovrascritto: si aggiunge _2, _3...
 ipcMain.handle('save-mesh-files', async (event, { title, files }) => {

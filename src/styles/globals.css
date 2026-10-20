@@ -227,6 +227,37 @@ button:focus-visible {
   font-size: 15px;
 }
 
+.workspace-action-chevron {
+  color: #9aa3b5;
+  font-size: 11px;
+}
+
+/* sottomenu di uno strumento (es. CBCT) */
+.workspace-submenu {
+  display: grid;
+  gap: 2px;
+  margin: -2px 0 2px 22px;
+  padding-left: 13px;
+  border-left: 1px solid #e3e7f0;
+}
+
+.workspace-subaction {
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #5c6372;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.workspace-subaction:hover {
+  background: #f1f4ff;
+  color: #4568dd;
+}
+
 .workspace-action:hover .workspace-action-icon {
   background: #e5ebff;
   color: #4568dd;

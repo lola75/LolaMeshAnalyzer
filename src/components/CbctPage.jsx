@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Niivue, NVImage, NVMesh, DRAG_MODE, SLICE_TYPE, MULTIPLANAR_TYPE, SHOW_RENDER } from '@niivue/niivue'
 import { apiUrl, checkServerHealth } from '../utils/meshLibBackend'
+import { readErrorDetail, newProgressId, postFormWithProgress } from '../utils/cbctHttp'
 import { attachRenderWheelZoom } from '../utils/niivueWheelZoom'
 import { attachRenderDragPan, resetRenderPan } from '../utils/niivueRenderPan'
 import { MESH_EXPORT_FORMATS, meshToFile } from '../utils/meshFileWriters'
@@ -127,6 +128,7 @@ const transformMesh = (mesh, matrix, gl) => {
 }
 
 const CROP_IDLE = { active: false, points: [], closed: false, keepInside: false }
+const CROP_STEP_MM = 5 // Ritaglio: tasto premuto e trascinato = un punto ogni 5 mm
 const ORIENT_IDLE = { active: false, rx: 0, ry: 0, rz: 0 }
 const BOX_IDLE = { active: false, changed: false, ...FULL_BOX }
 
@@ -156,17 +158,6 @@ const rotationZ = (deg) => {
 const rotationAboutCenter = ({ rx, ry, rz }, center) =>
   matMul(translation(center), matMul(rotationX(rx), matMul(rotationY(ry), matMul(rotationZ(rz), translation(center.map((c) => -c))))))
 
-const readErrorDetail = async (response) => {
-  try {
-    const body = await response.json()
-    return body?.detail || `Errore ${response.status}`
-  } catch {
-    return `Errore ${response.status}`
-  }
-}
-
-const newProgressId = () => (window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`)
-
 // Scarica il corpo della risposta segnalando la frazione ricevuta (0-1)
 const readBodyWithProgress = async (response, onProgress) => {
   const total = Number(response.headers.get('Content-Length')) || 0
@@ -189,21 +180,6 @@ const readBodyWithProgress = async (response, onProgress) => {
   }
   return buffer.buffer
 }
-
-// POST con avanzamento dell'invio (fetch non lo fornisce). Restituisce una Response come fetch.
-const postFormWithProgress = (url, form, onProgress) => new Promise((resolve, reject) => {
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', url)
-  xhr.upload.onprogress = (event) => {
-    if (event.lengthComputable) onProgress(event.loaded / event.total)
-  }
-  xhr.onload = () => resolve(new Response(xhr.responseText, {
-    status: xhr.status,
-    headers: { 'Content-Type': xhr.getResponseHeader('Content-Type') || 'application/json' },
-  }))
-  xhr.onerror = () => reject(new TypeError('Failed to fetch'))
-  xhr.send(form)
-})
 
 export default function CbctPage({ onClose }) {
   const canvasRef = useRef(null)
@@ -1232,6 +1208,21 @@ export default function CbctPage({ onClose }) {
     setSelectedObjectId(null)
   }
 
+  // Ritaglio: pixel (CSS) corrispondenti a 5 mm nella vista 3D con lo zoom attuale
+  // (proiezione ortografica di NiiVue: lato corto del riquadro = 2 * 0.8 * raggio / zoom)
+  const cropStepPx = () => {
+    const nv = nvRef.current
+    const canvas = canvasRef.current
+    if (!nv || !canvas || !(nv.furthestFromPivot > 0)) return 0
+    const rect = canvas.getBoundingClientRect()
+    const dpr = canvas.width / rect.width || 1
+    const tile = nv.screenSlices?.find((slice) => slice.axCorSag === SLICE_TYPE.RENDER)
+    const [, , w, h] = tile?.leftTopWidthHeight ?? [0, 0, canvas.width, canvas.height]
+    const shortSidePx = Math.min(w || canvas.width, h || canvas.height) / dpr
+    const mmPerPx = (2 * 0.8 * nv.furthestFromPivot) / nv.scene.volScaleMultiplier / shortSidePx
+    return CROP_STEP_MM / mmPerPx
+  }
+
   const busy = Boolean(loadingMessage)
   const sliceLayout = Boolean(matching || adjusting)
   // Viste con slice 2D: contrasto delle slice separato (texture propria solo quando serve)
@@ -1555,7 +1546,9 @@ export default function CbctPage({ onClose }) {
               points={crop.points}
               closed={crop.closed}
               keepInside={crop.keepInside}
+              getStepPx={cropStepPx}
               onAddPoint={(point) => setCrop((c) => ({ ...c, points: [...c.points, point] }))}
+              onAddPoints={(added) => setCrop((c) => ({ ...c, points: [...c.points, ...added] }))}
               onRemoveLastPoint={() => setCrop((c) => ({ ...c, closed: false, points: c.points.slice(0, -1) }))}
               onClose={() => setCrop((c) => (c.points.length >= 3 ? { ...c, closed: true } : c))}
               onCancel={() => setCrop(CROP_IDLE)}
@@ -1720,7 +1713,7 @@ export default function CbctPage({ onClose }) {
           {meta && (
             <div className="absolute bottom-2 left-3 text-xs text-white/70 pointer-events-none">
               {crop.active
-                ? 'Ritaglio: clic per aggiungere punti · doppio clic per chiudere · Esc per annullare'
+                ? 'Ritaglio: clic per aggiungere punti, oppure tieni premuto e trascina (un punto ogni 5 mm) · doppio clic per chiudere · Esc per annullare'
                 : sliceLayout
                   ? `${matching?.previewMesh || adjusting ? 'Goniometro: trascina i cerchi blu per ruotare, il centro per spostare · ' : 'Clic per spostare il cursore · '}Rotella: zoom sul 3D, scorrimento sulle slice · Tasto destro trascinato: zoom + / − sulle slice · Rotella premuta e trascinata: sposta slice e 3D${matchingContrast ? ', contrasto sul 3D' : ''}`
                   : 'Clic per spostare il cursore · Rotella: zoom sul 3D, scorrimento sulle slice · Rotella premuta e trascinata: sposta il 3D · Tasto destro trascinato per il contrasto'}

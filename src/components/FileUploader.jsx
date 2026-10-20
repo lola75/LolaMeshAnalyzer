@@ -10,7 +10,8 @@ export default function FileUploader({
   onFileLoaded,
   onInvertedDetected,
   showFormatInfo = true,
-  formatInfoClassName = ''
+  formatInfoClassName = '',
+  multiple = false
 }) {
   const fileInputRef = useRef(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -27,76 +28,80 @@ export default function FileUploader({
     }
   }
 
-  const handleFileSelect = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const loadGeometry = (extension, arrayBuffer) => {
+    switch (extension) {
+      case 'stl':
+        return loadSTL(arrayBuffer)
+      case 'obj':
+        return loadOBJ(new TextDecoder().decode(arrayBuffer))
+      case 'ply':
+        return loadPLY(arrayBuffer)
+      default:
+        throw new Error('Estensione non supportata')
+    }
+  }
 
+  // Uno o piu' file: ognuno viene caricato e passato a onFileLoaded (la pagina li aggiunge)
+  const loadFile = async (file) => {
     const extension = file.name.split('.').pop().toLowerCase()
     if (!['stl', 'obj', 'ply'].includes(extension)) {
-      setError('Formato non supportato. Usa STL, OBJ o PLY.')
-      return
+      throw new Error('formato non supportato (usa STL, OBJ o PLY)')
     }
+    const arrayBuffer = await file.arrayBuffer()
+    const geometry = loadGeometry(extension, arrayBuffer)
+    validateGeometry(geometry)
+    const metadata = extractMetadata(geometry, file, extension)
+
+    let analysisResult = null
+    try {
+      analysisResult = analyzeNormals(geometry)
+      if (analysisResult && analysisResult.hasIssues && typeof onInvertedDetected === 'function') {
+        onInvertedDetected({
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: extension,
+          invertedCount: analysisResult.invertedCount,
+          totalFaces: analysisResult.totalFaces,
+          percentage: analysisResult.percentage,
+          summary: analysisResult.message
+        })
+      }
+    } catch (err) {
+      console.warn('Analisi normali fallita:', err)
+    }
+
+    onFileLoaded({
+      geometry,
+      metadata,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: extension,
+      file,
+      analysis: analysisResult
+    })
+  }
+
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
 
     setIsLoading(true)
     setError(null)
-    setFileName(file.name)
-
-    try {
-      const arrayBuffer = await file.arrayBuffer()
-      let geometry
-
-      switch (extension) {
-        case 'stl':
-          geometry = loadSTL(arrayBuffer)
-          break
-        case 'obj':
-          geometry = loadOBJ(new TextDecoder().decode(arrayBuffer))
-          break
-        case 'ply':
-          geometry = loadPLY(arrayBuffer)
-          break
-        default:
-          throw new Error('Estensione non supportata')
-      }
-
-      validateGeometry(geometry)
-      const metadata = extractMetadata(geometry, file, extension)
-
-      let analysisResult = null
+    const loaded = []
+    const failed = []
+    for (const file of files) {
       try {
-        analysisResult = analyzeNormals(geometry)
-        if (analysisResult && analysisResult.hasIssues && typeof onInvertedDetected === 'function') {
-          onInvertedDetected({
-            fileName: file.name,
-            fileSize: file.size,
-            fileType: extension,
-            invertedCount: analysisResult.invertedCount,
-            totalFaces: analysisResult.totalFaces,
-            percentage: analysisResult.percentage,
-            summary: analysisResult.message
-          })
-        }
+        await loadFile(file)
+        loaded.push(file.name)
       } catch (err) {
-        console.warn('Analisi normali fallita:', err)
+        console.error(err)
+        failed.push(`${file.name}: ${err.message}`)
       }
-
-      onFileLoaded({
-        geometry,
-        metadata,
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: extension,
-        file,
-        analysis: analysisResult
-      })
-    } catch (err) {
-      setError(`Errore nel caricamento: ${err.message}`)
-      console.error(err)
-      setFileName(null)
-    } finally {
-      setIsLoading(false)
-      e.target.value = ''
     }
+    setFileName(loaded.length === 0 ? null : loaded.length === 1 ? loaded[0] : `${loaded.length} file`)
+    if (failed.length) setError(`Errore nel caricamento di ${failed.join(' · ')}`)
+    setIsLoading(false)
+    e.target.value = ''
   }
 
   const handleClick = () => {
@@ -117,7 +122,7 @@ export default function FileUploader({
           </svg>
           <div className="text-center">
             <p className="text-slate-800 text-xs font-medium">
-              {isLoading ? 'Caricamento...' : 'Apri una mesh'}
+              {isLoading ? 'Caricamento...' : multiple ? 'Apri una o più mesh' : 'Apri una mesh'}
             </p>
             <p className="text-slate-500 text-xs mt-1">
               Trascina o fai clic
@@ -145,6 +150,7 @@ export default function FileUploader({
         ref={fileInputRef}
         type="file"
         accept=".stl,.obj,.ply"
+        multiple={multiple}
         onChange={handleFileSelect}
         className="hidden"
       />

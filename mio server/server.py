@@ -1165,6 +1165,161 @@ def isotropic_remesh(mesh: mr.Mesh, target_edge_len: float = 0.0) -> dict:
     return {'targetEdgeLength': target_edge_len, 'before': before, 'after': mesh_quality_stats(mesh)}
 
 
+def make_solid(mesh: mr.Mesh, voxel_size: float, offset: float, max_triangles: int) -> dict:
+    """Crea solido (come "Make Solid" di Meshmixer): chiude le aperture della mesh, poi la
+    ricostruisce come volume pieno su una griglia di voxel (superficie chiusa e senza
+    auto-intersezioni). offset > 0 ingrandisce il solido, < 0 lo restringe (mm).
+    """
+    if not (0.02 <= voxel_size <= 2.0):
+        raise ValueError('La precisione deve essere tra 0.02 e 2 mm.')
+    before = mesh_quality_stats(mesh)
+    params = mr.FillHoleParams()
+    params.metric = mr.getUniversalMetric(mesh)
+    holes = mesh.topology.findHoleRepresentiveEdges()
+    for edge in holes:
+        mr.fillHole(mesh, edge, params)
+
+    offset_params = mr.OffsetParameters()
+    offset_params.voxelSize = voxel_size
+    offset_params.signDetectionMode = mr.SignDetectionMode.WindingRule
+    solid = mr.offsetMesh(mr.MeshPart(mesh), offset, offset_params)
+    if solid.topology.numValidFaces() == 0:
+        raise ValueError("Solido vuoto: prova con una precisione piu' fine o un offset maggiore.")
+
+    faces = solid.topology.numValidFaces()
+    if max_triangles > 0 and faces > max_triangles:
+        settings = mr.DecimateSettings()
+        settings.strategy = mr.DecimateStrategy.MinimizeError
+        settings.maxDeletedFaces = faces - max_triangles
+        settings.maxError = float(np.finfo(np.float32).max)
+        settings.optimizeVertexPos = True
+        settings.packMesh = True
+        settings.subdivideParts = 8
+        mr.decimateMesh(solid, settings)
+    return {
+        'holesClosed': len(holes),
+        'voxelSize': voxel_size,
+        'offset': offset,
+        'volumeMm3': float(solid.volume()),
+        'before': before,
+        'after': mesh_quality_stats(solid),
+        'solid': solid,
+    }
+
+
+@app.post("/make-solid")
+async def make_solid_endpoint(
+    file: UploadFile = File(...),
+    voxel_size: float = Form(0.2),
+    offset: float = Form(0.0),
+    max_triangles: int = Form(400000),
+):
+    filename = file.filename or "mesh.stl"
+    data = await file.read()
+    try:
+        mesh = load_mesh_from_bytes(data, filename)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = make_solid(mesh, voxel_size, offset, max_triangles)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore Crea solido: {exc}")
+    solid = stats.pop('solid')
+    print(f"[make-solid] {filename}: {stats['holesClosed']} aperture chiuse, volume {stats['volumeMm3']:.1f} mm3")
+
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(solid, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(
+        content=ply_bytes,
+        media_type="application/octet-stream",
+        headers={"X-Mesh-Stats": json.dumps(stats)},
+    )
+
+
+def remesh_near_points(mesh: mr.Mesh, points: np.ndarray, reach: float, target_edge_len: float = 0.0) -> dict:
+    """Remesh isotropico solo dei triangoli entro `reach` mm dai punti dati (es. i vertici dei bordi
+    da raddrizzare): triangoli regolari lungo il bordo, il resto della mesh resta identico."""
+    import meshlib.mrmeshnumpy as mrn
+    import open3d as o3d
+
+    if len(points) == 0:
+        raise ValueError('Nessun punto del bordo ricevuto.')
+    verts = mrn.getNumpyVerts(mesh).astype(np.float64)
+    faces = mrn.getNumpyFaces(mesh.topology)
+    # distanza di ogni vertice dal punto di bordo piu' vicino (Open3D, in un solo passaggio)
+    vert_cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(verts))
+    border_cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points.astype(np.float64)))
+    near = np.asarray(vert_cloud.compute_point_cloud_distance(border_cloud)) <= reach
+    face_mask = near[faces].any(axis=1)
+    if not face_mask.any():
+        raise ValueError('Nessun triangolo vicino ai bordi scelti.')
+    region_faces = faces[face_mask]
+    if target_edge_len <= 0:
+        a, b, c = verts[region_faces[:, 0]], verts[region_faces[:, 1]], verts[region_faces[:, 2]]
+        area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).mean()
+        target_edge_len = float(np.sqrt(area * 4.0 / np.sqrt(3.0)))  # triangolo equilatero di area media
+    region = mrn.faceBitSetFromBools(face_mask)
+
+    settings = mr.RemeshSettings()
+    settings.targetEdgeLen = target_edge_len
+    settings.region = region
+    settings.projectOnOriginalMesh = True
+    settings.finalRelaxIters = 2
+    settings.finalRelaxNoShrinkage = True
+    settings.maxBdShift = target_edge_len * 0.5
+    settings.packMesh = True
+    if not mr.remesh(mesh, settings):
+        raise ValueError('Remesh interrotto.')
+    return {'regionTriangles': int(face_mask.sum()), 'targetEdgeLength': target_edge_len,
+            'triangles': int(mesh.topology.numValidFaces())}
+
+
+@app.post("/remesh-near-border")
+async def remesh_near_border(
+    file: UploadFile = File(...),
+    points: str = Form(...),
+    reach: float = Form(2.0),
+    target_edge_len: float = Form(0.0),
+):
+    filename = file.filename or "mesh.stl"
+    data = await file.read()
+    try:
+        mesh = load_mesh_from_bytes(data, filename)
+        pts = np.asarray(json.loads(points), dtype=np.float64).reshape(-1, 3)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = remesh_near_points(mesh, pts, float(reach), float(target_edge_len))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore remesh del bordo: {exc}")
+    print(f"[remesh-bordo] {filename}: {stats}")
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(mesh, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(content=ply_bytes, media_type="application/octet-stream", headers={"X-Mesh-Stats": json.dumps(stats)})
+
+
 @app.post("/remesh-isotropic")
 async def remesh_isotropic(file: UploadFile = File(...), target_edge_len: float = Form(0.0)):
     filename = file.filename or "mesh.stl"

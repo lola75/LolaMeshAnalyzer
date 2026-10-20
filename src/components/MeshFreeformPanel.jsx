@@ -32,7 +32,7 @@ export default function MeshFreeformPanel({ meshName, diagonal, settings, onSett
           <div className="text-xs text-slate-600">⏳ Preparazione della mesh in corso...</div>
         ) : (
           <>
-            <div className="grid grid-cols-5 gap-1.5">
+            <div className="grid grid-cols-4 gap-1.5">
               {FREEFORM_BRUSHES.map((brush) => (
                 <button
                   key={brush.id}
@@ -46,7 +46,7 @@ export default function MeshFreeformPanel({ meshName, diagonal, settings, onSett
                 </button>
               ))}
             </div>
-            <p className="text-[11px] text-slate-500">{active?.hint}. Trascina sulla mesh col tasto sinistro; sullo sfondo la vista ruota.</p>
+            <p className="text-[11px] text-slate-500">{active?.hint}. Trascina sulla mesh col tasto sinistro; sullo sfondo la vista ruota. Ctrl + rotella cambia il raggio.</p>
 
             <div className="grid grid-cols-[100px_1fr_auto] items-center gap-x-3 gap-y-3 text-sm">
               <label className="text-slate-600" htmlFor="freeform-radius">Raggio</label>

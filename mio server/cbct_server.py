@@ -600,6 +600,11 @@ import cbct_seg2  # noqa: E402
 
 cbct_seg2.register(app, _get_session, _progress_reporter, PROGRESS, _reduction_factor)
 
+# Esplora DICOM (pagina "Filtra immagini DICOM"): endpoint /dicom/... in dicom_browser.py
+import dicom_browser  # noqa: E402
+
+dicom_browser.register(app, _progress_reporter, PROGRESS, _safe_extract_zip, WORK_ROOT)
+
 
 if __name__ == "__main__":
     import uvicorn

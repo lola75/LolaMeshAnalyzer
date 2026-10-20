@@ -2,9 +2,12 @@ import React, { useEffect, useRef, useState } from 'react'
 
 // Livello trasparente sopra il visualizzatore 3D per disegnare il contorno del ritaglio.
 // I punti sono in pixel CSS rispetto al riquadro del visualizzatore.
-export default function CbctCropOverlay({ points, closed, keepInside, onAddPoint, onRemoveLastPoint, onClose, onCancel }) {
+// Clic = un punto; tasto premuto e trascinato = un punto ogni 5 mm lungo il percorso
+// (getStepPx: quanti pixel valgono 5 mm con lo zoom attuale del 3D).
+export default function CbctCropOverlay({ points, closed, keepInside, getStepPx, onAddPoint, onAddPoints, onRemoveLastPoint, onClose, onCancel }) {
   const canvasRef = useRef(null)
   const [hover, setHover] = useState(null)
+  const drawRef = useRef(null) // { last: [x, y], step } mentre il tasto e' premuto
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -67,13 +70,46 @@ export default function CbctCropOverlay({ points, closed, keepInside, onAddPoint
     return [event.clientX - rect.left, event.clientY - rect.top]
   }
 
+  // fine del trascinamento anche se il tasto si rilascia fuori dal visualizzatore
+  useEffect(() => {
+    const stop = () => { drawRef.current = null }
+    window.addEventListener('mouseup', stop)
+    return () => window.removeEventListener('mouseup', stop)
+  }, [])
+
+  // punti intermedi a passo fisso dall'ultimo punto verso il mouse
+  const addPathPoints = (target) => {
+    const draw = drawRef.current
+    if (!draw) return
+    let [x, y] = draw.last
+    let dx = target[0] - x
+    let dy = target[1] - y
+    let distance = Math.hypot(dx, dy)
+    if (distance < draw.step) return
+    const added = []
+    while (distance >= draw.step) {
+      x += (dx / distance) * draw.step
+      y += (dy / distance) * draw.step
+      added.push([x, y])
+      dx = target[0] - x
+      dy = target[1] - y
+      distance = Math.hypot(dx, dy)
+    }
+    draw.last = [x, y]
+    onAddPoints(added)
+  }
+
   return (
     <canvas
       ref={canvasRef}
       className="absolute inset-0 w-full h-full"
       style={{ cursor: closed ? 'default' : 'crosshair' }}
-      onClick={(event) => {
-        if (!closed) onAddPoint(localPoint(event))
+      onMouseDown={(event) => {
+        if (closed || event.button !== 0) return
+        const point = localPoint(event)
+        onAddPoint(point)
+        const step = getStepPx?.()
+        drawRef.current = step > 0 ? { last: point, step: Math.max(step, 3) } : null
       }}
       onDoubleClick={() => {
         // Il doppio clic ha gia' aggiunto due punti uguali: si toglie il duplicato e si chiude
@@ -81,7 +117,11 @@ export default function CbctCropOverlay({ points, closed, keepInside, onAddPoint
         onRemoveLastPoint()
         onClose()
       }}
-      onMouseMove={(event) => setHover(localPoint(event))}
+      onMouseMove={(event) => {
+        const point = localPoint(event)
+        setHover(point)
+        if (drawRef.current && event.buttons & 1) addPathPoints(point)
+      }}
       onMouseLeave={() => setHover(null)}
       onContextMenu={(event) => event.preventDefault()}
     />

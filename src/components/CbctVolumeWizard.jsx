@@ -92,7 +92,7 @@ export default function CbctVolumeWizard({
         ) : (
           <div className="flex flex-col gap-2">
             <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2">
-              Clic sul 3D per aggiungere punti, doppio clic per chiudere il contorno.
+              Clic sul 3D per aggiungere punti (o tieni premuto e trascina: un punto ogni 5 mm), doppio clic per chiudere il contorno.
               Backspace toglie l’ultimo punto, Esc annulla.
             </p>
             <div className={`text-xs font-medium px-2 py-1 rounded ${crop.keepInside ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
