@@ -15,6 +15,7 @@ import PasswordPromptModal from './components/PasswordPromptModal'
 import SplashScreen from './components/SplashScreen'
 import ChatWindow from './components/ChatWindow'
 import ScoreBar from './components/ScoreBar'
+import MeshColorPicker, { hexFromNumber, numberFromHex } from './components/MeshColorPicker'
 import { ChatProvider } from './contexts/ChatContext'
 
 // Colori delle mesh caricate (la prima ha il colore di sempre)
@@ -69,6 +70,17 @@ function AppContent() {
     setActiveMeshId(id)
   }
 
+  // colore scelto dall'utente (vale anche sulle mesh con colori propri); il colore di partenza
+  // resta per "Colore originale"
+  const setMeshColor = (id, hex) => {
+    setLoadedMeshes((list) => list.map((m) => (m.id === id
+      ? { ...m, color: numberFromHex(hex), forceColor: true, originalColor: m.forceColor ? m.originalColor : m.color }
+      : m)))
+  }
+  const resetMeshColor = (id) => {
+    setLoadedMeshes((list) => list.map((m) => (m.id === id ? { ...m, color: m.originalColor ?? m.color, forceColor: false, originalColor: undefined } : m)))
+  }
+
   const removeLoadedMesh = (id) => {
     const next = loadedMeshes.filter((m) => m.id !== id)
     setLoadedMeshes(next)
@@ -89,7 +101,7 @@ function AppContent() {
 
   // Altre mesh nella vista (oltre a quella attiva) e mesh tra cui scegliere per la modifica
   const extraMeshes = useMemo(
-    () => loadedMeshes.filter((m) => m.id !== activeMeshId).map((m) => ({ id: m.id, geometry: m.geometry, color: m.color })),
+    () => loadedMeshes.filter((m) => m.id !== activeMeshId).map((m) => ({ id: m.id, geometry: m.geometry, color: m.color, forceColor: !!m.forceColor })),
     [loadedMeshes, activeMeshId]
   )
   const editableMeshes = useMemo(
@@ -411,7 +423,14 @@ function AppContent() {
                           title={visible ? 'Nascondi' : 'Mostra'}
                           className="w-3.5 h-3.5 accent-sky-600"
                         />
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10" style={{ background: `#${m.color.toString(16).padStart(6, '0')}` }} />
+                        <MeshColorPicker
+                          value={hexFromNumber(m.color)}
+                          onChange={(hex) => setMeshColor(m.id, hex)}
+                          onReset={m.forceColor ? () => resetMeshColor(m.id) : null}
+                          originalColor={m.forceColor ? hexFromNumber(m.originalColor) : null}
+                          label={`Colore di ${m.name}`}
+                          className="h-3.5 w-3.5"
+                        />
                         <span className={`flex-1 truncate ${visible ? 'text-slate-800' : 'text-slate-400'}`}>{m.name}</span>
                         {active && <span className="text-[10px] font-semibold text-sky-700">attiva</span>}
                         <button
@@ -513,6 +532,7 @@ function AppContent() {
                 geometry={meshData}
                 requireEditConsent={editConsentRequired}
                 primaryColor={activeMesh.color}
+                primaryForceColor={!!activeMesh.forceColor}
                 primaryVisible={meshVisibility[activeMeshId] !== false}
                 extraMeshes={extraMeshes}
                 extraVisible={meshVisibility}

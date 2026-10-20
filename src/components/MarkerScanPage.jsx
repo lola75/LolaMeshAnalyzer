@@ -1,27 +1,36 @@
 import React from 'react'
+import MeshModifier from './MeshModifier'
+import MarkerScanTools from './MarkerScanTools'
 
-// Pagina "Crea Marker Scan" (sottomenu CBCT degli Strumenti): contenuto in progettazione.
+// Pagina "Crea Marker Scan" (Strumenti > CBCT): stessa pagina del Modificatore mesh (caricamento
+// delle mesh, vista 3D, storico, Applica / Ignora modifiche) senza i suoi gruppi di strumenti, al
+// posto dei quali ci sono gli strumenti della guida (Rimozione Sottosquadri, Generazione Guida).
 export default function MarkerScanPage({ onClose }) {
   return (
-    <div className="alignment-workspace fixed inset-0 z-50 flex flex-col">
-      <div className="sticky top-0 z-20 bg-white border-b border-slate-200 p-4">
-        <div className="mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">Crea Marker Scan</h1>
-            <p className="text-sm text-slate-600 mt-1">Strumento in preparazione</p>
-          </div>
-          <button onClick={onClose} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-700">
-            Chiudi
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 min-h-0 flex items-center justify-center p-6">
-        <div className="max-w-md text-center text-slate-600">
-          <div className="text-4xl mb-3" aria-hidden="true">◎</div>
-          <h2 className="text-base font-semibold text-slate-800 mb-1">Pagina in preparazione</h2>
-          <p className="text-sm">Qui verrà realizzato lo strumento per creare il Marker Scan.</p>
-        </div>
-      </div>
+    <div className="fixed inset-0 z-50">
+      <MeshModifier
+        geometry={null}
+        title="Crea Marker Scan"
+        hideStandardTools
+        gridOverlay
+        extraSidebar={({ meshes, setMeshes, canvasHandlersRef, viewportOverlay, callMeshServer, rendererRef, meshesRef, sceneRef, cameraRef, showMessage }) => (
+          <MarkerScanTools
+            meshes={meshes}
+            setMeshes={setMeshes}
+            canvasHandlersRef={canvasHandlersRef}
+            viewportOverlay={viewportOverlay}
+            callMeshServer={callMeshServer}
+            rendererRef={rendererRef}
+            meshesRef={meshesRef}
+            sceneRef={sceneRef}
+            cameraRef={cameraRef}
+            onAction={(name) => showMessage(`ℹ️ "${name}": funzione in preparazione.`)}
+            showMessage={showMessage}
+          />
+        )}
+        requireEditConsent={false}
+        onClose={onClose}
+      />
     </div>
   )
 }

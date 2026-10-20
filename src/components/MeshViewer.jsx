@@ -19,6 +19,7 @@ export default function MeshViewer({
   // (analisi, triangoli, normali); extraMeshes = altre mesh [{ id, geometry, color }] nello
   // stesso riferimento, extraVisible = { id: true/false }
   primaryColor = 0xffaa7f,
+  primaryForceColor = false, // colore scelto dall'utente: vale anche se la mesh ha colori propri
   extraMeshes = null,
   extraVisible = null,
   // Modifica Mesh con piu' mesh: elenco [{ id, name, geometry }] da cui scegliere e callback
@@ -244,7 +245,7 @@ export default function MeshViewer({
     // Create mesh from geometry
     const primaryGeometry = geometry.clone()
     const secondaryGeometryClone = secondaryGeometry ? secondaryGeometry.clone() : null
-    const hasVertexColors = !!primaryGeometry.getAttribute('color')
+    const hasVertexColors = !!primaryGeometry.getAttribute('color') && !primaryForceColor
 
     // Increase vertex color saturation slightly for better visibility
     const increaseSaturation = (geom, factor = 1.25) => {
@@ -402,7 +403,7 @@ export default function MeshViewer({
     for (const extra of extraMeshes || []) {
       if (!extra?.geometry) continue
       const extraGeometry = extra.geometry.clone()
-      const extraHasColors = !!extraGeometry.getAttribute('color')
+      const extraHasColors = !!extraGeometry.getAttribute('color') && !extra.forceColor
       const extraMaterial = new THREE.MeshStandardMaterial({
         color: extraHasColors ? 0xffffff : extra.color,
         vertexColors: extraHasColors,
@@ -716,7 +717,7 @@ export default function MeshViewer({
       }
       containerRef.current?.removeChild(renderer.domElement)
     }
-  }, [geometry, secondaryGeometry, secondaryColor, secondaryOpacity, preserveWorldCoordinates, primaryColor, extraMeshes])
+  }, [geometry, secondaryGeometry, secondaryColor, secondaryOpacity, preserveWorldCoordinates, primaryColor, primaryForceColor, extraMeshes])
 
   useEffect(() => {
     if (meshRef.current) meshRef.current.visible = primaryVisible

@@ -1120,6 +1120,17 @@ export default function CbctPage({ onClose }) {
     setNotice(`${type} allineato alla CBCT (variazione ${result.rms.toFixed(3)} mm).`)
   }
 
+  // Colore di un oggetto 3D (nel 3D e nelle slice); il colore di partenza resta per "Colore originale"
+  const setObjectColor = (id, color, reset = false) => {
+    const object = objects.find((o) => o.id === id)
+    if (!object) return
+    nvRef.current?.setMeshProperty(object.mesh.id, 'rgba255', new Uint8Array([...color, 255]))
+    nvRef.current?.updateGLVolume?.()
+    setObjects((list) => list.map((o) => (o.id === id
+      ? { ...o, color, originalColor: reset ? undefined : (o.originalColor || o.color) }
+      : o)))
+  }
+
   // Spunta nella lista "Oggetti 3D": mostra/nasconde la mesh nel 3D e nelle slice
   const toggleObjectVisible = (id) => {
     const object = objects.find((o) => o.id === id)
@@ -1438,6 +1449,7 @@ export default function CbctPage({ onClose }) {
                   onImport={() => setImportDialogOpen(true)}
                   onRemove={removeObject}
                   onToggleVisible={toggleObjectVisible}
+                  onColor={setObjectColor}
                   onEdit={editObject}
                   onMatch={startAdjustObject}
                   onExport={exportObjects}

@@ -1247,6 +1247,417 @@ async def make_solid_endpoint(
     )
 
 
+def _edges_of(faces: np.ndarray) -> np.ndarray:
+    """Lati unici (non orientati) dei triangoli."""
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    return np.unique(np.sort(edges, axis=1), axis=0)
+
+
+def _neighbor_mean(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """Media dei valori (per vertice) dei vicini lungo i lati."""
+    n = len(values)
+    ends = np.concatenate([edges[:, 0], edges[:, 1]])
+    others = np.concatenate([edges[:, 1], edges[:, 0]])
+    count = np.maximum(np.bincount(ends, minlength=n), 1)
+    if values.ndim == 1:
+        return np.bincount(ends, weights=values[others], minlength=n) / count
+    total = np.stack([np.bincount(ends, weights=values[others, k], minlength=n) for k in range(values.shape[1])], axis=1)
+    return total / count[:, None]
+
+
+def _taubin(verts: np.ndarray, edges: np.ndarray, iterations: int, fixed: np.ndarray | None = None) -> np.ndarray:
+    """Lisciatura che conserva la forma (Taubin, lambda / mu): toglie le increspature senza
+    restringere la superficie, come "Leviga - Preserva forma" di Meshmixer."""
+    out = verts.copy()
+    for _ in range(iterations):
+        for factor in (0.5, -0.53):
+            step = _neighbor_mean(out, edges) - out
+            if fixed is not None:
+                step[fixed] = 0
+            out = out + factor * step
+    return out
+
+
+def _vertex_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    face_normals = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
+    normals = np.zeros_like(verts)
+    for k in range(3):
+        np.add.at(normals, faces[:, k], face_normals)  # pesate con l'area
+    return normals / (np.linalg.norm(normals, axis=1, keepdims=True) + 1e-12)
+
+
+def _boundary_loops(faces: np.ndarray) -> list:
+    """Anelli di bordo come liste ordinate di vertici, nel verso dei lati dei triangoli."""
+    directed = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    present = set(map(tuple, directed.tolist()))
+    # un vertice puo' avere piu' lati di bordo in uscita (bordo che tocca se stesso)
+    following = {}
+    for a, b in directed.tolist():
+        if (b, a) not in present:
+            following.setdefault(a, []).append(b)
+    loops = []
+    while following:
+        start = next(iter(following))
+        loop = [start]
+        current = start
+        while True:
+            targets = following.get(current)
+            if not targets:
+                break
+            nxt = targets.pop()
+            if not targets:
+                del following[current]
+            if nxt == start:
+                break
+            loop.append(nxt)
+            current = nxt
+        if len(loop) >= 3:
+            loops.append(loop)
+    return loops
+
+
+def _largest_component(faces: np.ndarray, vertex_count: int) -> np.ndarray:
+    """Triangoli della parte connessa piu' grande (etichette propagate lungo i lati)."""
+    labels = np.arange(vertex_count)
+    edges = _edges_of(faces)
+    while True:
+        low = np.minimum(labels[edges[:, 0]], labels[edges[:, 1]])
+        updated = labels.copy()
+        np.minimum.at(updated, edges[:, 0], low)
+        np.minimum.at(updated, edges[:, 1], low)
+        updated = updated[updated]  # salto dei puntatori: converge in pochi passi
+        if np.array_equal(updated, labels):
+            break
+        labels = updated
+    face_labels = labels[faces[:, 0]]
+    values, counts = np.unique(face_labels, return_counts=True)
+    return faces[face_labels == values[np.argmax(counts)]]
+
+
+def make_guide(region: mr.Mesh, up: np.ndarray, offset: float, occlusal: float, perimeter: float,
+               edge_length: float = 0.3, smoothing: int = 4, border_smoothing: int = 20, voxel_size: float = 0.3) -> dict:
+    """Guida chirurgica (Crea Marker Scan) costruita sulla superficie, come in Meshmixer:
+    1. la regione scelta sul modello senza sottosquadri, estratta come pezzo di superficie
+       (parte piu' grande, buchi interni chiusi) e rimagliata in modo regolare;
+    2. lisciatura che conserva la forma ("Leviga - Preserva forma") e lisciatura del bordo;
+    3. superficie interna = pezzo spostato lungo le normali di `offset` (spazio sui denti), con le
+       normali invertite verso il modello;
+    4. superficie esterna come l'offset di Meshmixer: superficie a distanza costante dal pezzo
+       (voxel, MeshLib), lato esterno, spessore occlusale dove il pezzo guarda la direzione di
+       inserzione e perimetrale sui lati, lisciata insieme al suo bordo;
+    5. "Unisci margini": i due bordi cuciti da una fascia.
+    Nessuna operazione booleana.
+    """
+    import meshlib.mrmeshnumpy as mrn
+
+    up = up / (np.linalg.norm(up) or 1.0)
+    verts = mrn.getNumpyVerts(region).astype(np.float64)
+    faces = mrn.getNumpyFaces(region.topology).astype(np.int64)
+    if len(faces) == 0:
+        raise ValueError('Regione della guida vuota.')
+    # via i triangoli rivolti all'opposto della direzione di inserzione (fondo del modello)
+    face_up = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]]) @ up
+    face_len = np.linalg.norm(np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]]), axis=1)
+    faces = faces[face_up >= -0.5 * face_len]
+    if len(faces) == 0:
+        raise ValueError('Regione della guida vuota.')
+
+    # 1. parte piu' grande, buchi interni chiusi a ventaglio, poi maglia regolare
+    faces = _largest_component(faces, len(verts))
+    loops = _boundary_loops(faces)
+    if not loops:
+        raise ValueError('La regione scelta non ha un bordo: scegli una parte del modello.')
+    lengths = [np.linalg.norm(verts[loop] - verts[np.roll(loop, -1)], axis=1).sum() for loop in loops]
+    outer_loop = int(np.argmax(lengths))
+    extra_verts = []
+    extra_faces = []
+    for k, loop in enumerate(loops):
+        if k == outer_loop:
+            continue
+        center = len(verts) + len(extra_verts)
+        extra_verts.append(verts[loop].mean(axis=0))
+        for a, b in zip(loop, np.roll(loop, -1)):
+            extra_faces.append([b, a, center])
+    if extra_verts:
+        verts = np.vstack([verts, extra_verts])
+        faces = np.vstack([faces, np.asarray(extra_faces, dtype=np.int64)])
+    used = np.unique(faces)
+    remap = np.full(len(verts), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    verts, faces = verts[used], remap[faces]
+
+    patch = mrn.meshFromFacesVerts(faces.astype(np.int32), verts.astype(np.float32))
+    settings = mr.RemeshSettings()
+    settings.targetEdgeLen = edge_length
+    settings.maxBdShift = edge_length * 0.5
+    settings.finalRelaxIters = 2
+    settings.finalRelaxNoShrinkage = True
+    settings.packMesh = True
+    mr.remesh(patch, settings)
+    verts = mrn.getNumpyVerts(patch).astype(np.float64)
+    faces = mrn.getNumpyFaces(patch.topology).astype(np.int64)
+    edges = _edges_of(faces)
+    loops = _boundary_loops(faces)
+    loop = max(loops, key=len)
+    border = np.zeros(len(verts), dtype=bool)
+    border[loop] = True
+
+    # 2. lisciatura della superficie (bordo fermo) e del bordo lungo la linea
+    verts = _taubin(verts, edges, smoothing, fixed=border)
+    ring = np.asarray(loop)
+    for _ in range(border_smoothing):
+        verts[ring] += 0.5 * ((np.roll(verts[ring], 1, axis=0) + np.roll(verts[ring], -1, axis=0)) / 2 - verts[ring])
+    verts = _taubin(verts, edges, 2, fixed=border)
+
+    # 3. superficie interna: il pezzo spostato di `offset` lungo le normali (spostamento piccolo:
+    # nessuna piega)
+    normals = _vertex_normals(verts, faces)
+    for _ in range(4):
+        normals = _neighbor_mean(normals, edges) + normals
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True) + 1e-12
+    inner = verts + normals * offset
+
+    # 4. superficie esterna come l'offset di Meshmixer: superficie a distanza costante dal pezzo
+    # (voxel, MeshLib), che non puo' ripiegarsi; se ne tiene il lato esterno
+    import open3d as o3d
+    smooth_patch = mrn.meshFromFacesVerts(faces.astype(np.int32), verts.astype(np.float32))
+    reach = offset + max(occlusal, perimeter)
+    unsigned = mr.OffsetParameters()
+    unsigned.voxelSize = voxel_size
+    unsigned.signDetectionMode = mr.SignDetectionMode.Unsigned
+    shell = mr.offsetMesh(mr.MeshPart(smooth_patch), reach, unsigned)
+    shell_verts = mrn.getNumpyVerts(shell).astype(np.float64)
+    shell_faces = mrn.getNumpyFaces(shell.topology).astype(np.int64)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.core.Tensor(verts.astype(np.float32)), o3d.core.Tensor(faces.astype(np.uint32)))
+    face_normals = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
+    face_normals /= np.linalg.norm(face_normals, axis=1, keepdims=True) + 1e-12
+
+    def closest(points):
+        """Punto piu' vicino del pezzo, triangolo e normale (dei vertici) interpolata li'."""
+        result = scene.compute_closest_points(o3d.core.Tensor(points.astype(np.float32)))
+        prim = result['primitive_ids'].numpy().astype(np.int64)
+        uv = result['primitive_uvs'].numpy().astype(np.float64)
+        corner = faces[prim]
+        smooth = (normals[corner[:, 0]] * (1 - uv[:, :1] - uv[:, 1:]) + normals[corner[:, 1]] * uv[:, :1] + normals[corner[:, 2]] * uv[:, 1:])
+        smooth /= np.linalg.norm(smooth, axis=1, keepdims=True) + 1e-12
+        return result['points'].numpy().astype(np.float64), prim, smooth
+
+    # dove il punto piu' vicino e' all'interno del pezzo la direzione coincide con la normale; sul
+    # "cappuccio" attorno al bordo del pezzo si inclina: il taglio segue il bordo, parallelo
+    centroids = shell_verts[shell_faces].mean(axis=1)
+    foot, prim, smooth = closest(centroids)
+    away = centroids - foot
+    cosine = (away * smooth).sum(axis=1) / (np.linalg.norm(away, axis=1) + 1e-12)
+    sheet_faces = _largest_component(shell_faces[cosine > 0.9], len(shell_verts))
+    used = np.unique(sheet_faces)
+    remap = np.full(len(shell_verts), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    outer, sheet_faces = shell_verts[used], remap[sheet_faces]
+    # eventuali buchi rimasti nel foglio: chiusi a ventaglio (tutti tranne il bordo piu' lungo)
+    sheet_loops = sorted(_boundary_loops(sheet_faces), key=len)
+    extra_verts, extra_faces = [], []
+    for hole in sheet_loops[:-1]:
+        center = len(outer) + len(extra_verts)
+        extra_verts.append(outer[hole].mean(axis=0))
+        extra_faces += [[b, a, center] for a, b in zip(hole, np.roll(hole, -1))]
+    if extra_verts:
+        outer = np.vstack([outer, extra_verts])
+        sheet_faces = np.vstack([sheet_faces, np.asarray(extra_faces, dtype=np.int64)])
+    sheet_edges = _edges_of(sheet_faces)
+
+    # spessore: occlusale dove il pezzo guarda la direzione di inserzione, perimetrale sui lati
+    foot, prim, _ = closest(outer)
+    direction = outer - foot
+    direction /= np.linalg.norm(direction, axis=1, keepdims=True) + 1e-12
+    facing = np.clip((face_normals[prim] @ up - 0.3) / 0.4, 0.0, 1.0)
+    for _ in range(10):
+        facing = 0.5 * (facing + _neighbor_mean(facing, sheet_edges))
+    outer = foot + direction * (offset + perimeter + (occlusal - perimeter) * facing)[:, None]
+
+    # lisciatura dell'esterno e del suo bordo
+    outer_loops = _boundary_loops(sheet_faces)
+    if not outer_loops:
+        raise ValueError('Superficie esterna della guida senza bordo.')
+    outer_ring = np.asarray(max(outer_loops, key=len))
+    outer_border = np.zeros(len(outer), dtype=bool)
+    outer_border[outer_ring] = True
+    outer = _taubin(outer, sheet_edges, smoothing, fixed=outer_border)
+    for _ in range(border_smoothing):
+        outer[outer_ring] += 0.5 * ((np.roll(outer[outer_ring], 1, axis=0) + np.roll(outer[outer_ring], -1, axis=0)) / 2 - outer[outer_ring])
+    outer = _taubin(outer, sheet_edges, 2, fixed=outer_border)
+
+    # 5. "Unisci margini": fascia tra il bordo esterno e quello interno, percorsi in parallelo
+    # (stesso verso, punto di partenza allineato, avanzando secondo la lunghezza percorsa)
+    m = len(outer)
+    inner_ring = np.asarray(loop)
+    shift = int(np.argmin(np.linalg.norm(outer[outer_ring] - inner[inner_ring[0]], axis=1)))
+    outer_ring = np.roll(outer_ring, -shift)
+
+    def turning(points):  # verso di rotazione attorno alla direzione di inserzione
+        centered = points - points.mean(axis=0)
+        return np.sign(np.cross(centered, np.roll(centered, -1, axis=0)).sum(axis=0) @ up)
+
+    if turning(outer[outer_ring]) != turning(inner[inner_ring]):
+        raise ValueError('Bordi della guida con verso opposto: regione non valida.')
+    # cerniera: a ogni passo avanza il bordo che chiude il triangolo con la diagonale piu' corta
+    no, ni = len(outer_ring), len(inner_ring)
+    ring_outer, ring_inner = outer[outer_ring], inner[inner_ring]
+    rim = []
+    i = j = 0
+    while i < no or j < ni:
+        if j >= ni:
+            advance_outer = True
+        elif i >= no:
+            advance_outer = False
+        else:
+            advance_outer = (np.linalg.norm(ring_outer[(i + 1) % no] - ring_inner[j % ni])
+                             <= np.linalg.norm(ring_outer[i % no] - ring_inner[(j + 1) % ni]))
+        if advance_outer:
+            rim.append([outer_ring[(i + 1) % no], outer_ring[i % no], inner_ring[j % ni] + m])
+            i += 1
+        else:
+            rim.append([outer_ring[i % no], inner_ring[j % ni] + m, inner_ring[(j + 1) % ni] + m])
+            j += 1
+
+    # 6. solido chiuso: esterno, interno con le normali invertite (verso il modello), fascia
+    all_verts = np.vstack([outer, inner])
+    all_faces = np.vstack([sheet_faces, faces[:, ::-1] + m, np.asarray(rim, dtype=np.int64)])
+    guide = mrn.meshFromFacesVerts(all_faces.astype(np.int32), all_verts.astype(np.float32))
+    # pieghe residue lungo la fascia del bordo: vertici spostati di poco (Relax), senza tagliare
+    fix_settings = mr.FixSelfIntersectionSettings()
+    fix_settings.method = mr.FixSelfIntersectionMethod.Relax
+    fix_settings.maxExpand = 3
+    try:
+        mr.localFixSelfIntersections(guide, fix_settings)
+    except Exception as exc:
+        print(f"[make-guide] Correzione auto-intersezioni non riuscita: {exc}")
+    return {
+        'triangles': int(guide.topology.numValidFaces()),
+        'volumeMm3': float(guide.volume()),
+        'openEdges': len(guide.topology.findHoleRepresentiveEdges()),
+        'selfIntersections': len(mr.findSelfCollidingTriangles(mr.MeshPart(guide))),
+        'guide': guide,
+    }
+
+
+@app.post("/make-guide")
+async def make_guide_endpoint(
+    file: UploadFile = File(...),
+    up: str = Form(...),
+    offset: float = Form(0.15),
+    occlusal: float = Form(3.5),
+    perimeter: float = Form(3.0),
+):
+    """file: la regione della guida (triangoli scelti del modello senza sottosquadri), in mm."""
+    try:
+        region_mesh = load_mesh_from_bytes(await file.read(), file.filename or "regione.stl")
+        direction = np.asarray(json.loads(up), dtype=np.float64).reshape(3)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = make_guide(region_mesh, direction, offset, occlusal, perimeter)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore Crea guida: {exc}")
+    guide = stats.pop('guide')
+    print(f"[make-guide] {stats}")
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(guide, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(content=ply_bytes, media_type="application/octet-stream", headers={"X-Mesh-Stats": json.dumps(stats)})
+
+
+def cut_window(mesh: mr.Mesh, center: np.ndarray, axis: np.ndarray, diameter: float, depth: float,
+               segments: int = 72) -> dict:
+    """Finestra rotonda (Crea Marker Scan): foro cilindrico nella guida. Cilindro di diametro
+    `diameter` e lunghezza `depth` centrato nel punto cliccato lungo `axis`, sottratto dalla mesh."""
+    import meshlib.mrmeshnumpy as mrn
+
+    if not (0.2 <= diameter <= 50) or not (0.2 <= depth <= 300):
+        raise ValueError('Dimensioni della finestra non valide.')
+    axis = axis / (np.linalg.norm(axis) or 1.0)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    angles = np.linspace(0.0, 2.0 * np.pi, segments, endpoint=False)
+    ring = center + (diameter / 2.0) * (np.cos(angles)[:, None] * u + np.sin(angles)[:, None] * v)
+    half = axis * (depth / 2.0)
+    n = segments
+    verts = np.vstack([ring - half, ring + half, [center - half], [center + half]])
+    faces = []
+    for i in range(n):
+        j = (i + 1) % n
+        faces += [[i, j, n + j], [i, n + j, n + i]]  # parete
+        faces.append([2 * n, j, i])  # fondo
+        faces.append([2 * n + 1, n + i, n + j])  # cima
+    faces = np.asarray(faces, dtype=np.int32)
+    cylinder = mrn.meshFromFacesVerts(faces, verts.astype(np.float32))
+    if cylinder.volume() < 0:  # normali verso l'interno: si girano i triangoli
+        cylinder = mrn.meshFromFacesVerts(faces[:, ::-1].copy(), verts.astype(np.float32))
+
+    before = float(mesh.volume())
+    result = mr.boolean(mesh, cylinder, mr.BooleanOperation.DifferenceAB)
+    if not result.valid():
+        raise ValueError(f'Foro della finestra non riuscito: {result.errorString}')
+    cut = result.mesh
+    removed = before - float(cut.volume())
+    if removed <= 1e-6:
+        raise ValueError('La finestra non attraversa la guida in quel punto.')
+    return {
+        'triangles': int(cut.topology.numValidFaces()),
+        'removedVolumeMm3': removed,
+        'openEdges': len(cut.topology.findHoleRepresentiveEdges()),
+        'mesh': cut,
+    }
+
+
+@app.post("/cut-window")
+async def cut_window_endpoint(
+    file: UploadFile = File(...),
+    center: str = Form(...),
+    axis: str = Form(...),
+    diameter: float = Form(6.79),
+    depth: float = Form(50.0),
+):
+    try:
+        mesh = load_mesh_from_bytes(await file.read(), file.filename or "guida.stl")
+        point = np.asarray(json.loads(center), dtype=np.float64).reshape(3)
+        direction = np.asarray(json.loads(axis), dtype=np.float64).reshape(3)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = cut_window(mesh, point, direction, diameter, depth)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore Finestra rotonda: {exc}")
+    cut = stats.pop('mesh')
+    print(f"[cut-window] {stats}")
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(cut, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(content=ply_bytes, media_type="application/octet-stream", headers={"X-Mesh-Stats": json.dumps(stats)})
+
+
 def remesh_near_points(mesh: mr.Mesh, points: np.ndarray, reach: float, target_edge_len: float = 0.0) -> dict:
     """Remesh isotropico solo dei triangoli entro `reach` mm dai punti dati (es. i vertici dei bordi
     da raddrizzare): triangoli regolari lungo il bordo, il resto della mesh resta identico."""

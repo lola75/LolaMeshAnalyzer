@@ -22,6 +22,8 @@ import { mergeGeometries, saveMeshFile } from '../utils/stlExport'
 import useMeshFreeform from './useMeshFreeform'
 import { transferVertexColors } from '../utils/meshColorTransfer'
 import MeshFreeformPanel from './MeshFreeformPanel'
+import MeshNormalsPanel from './MeshNormalsPanel'
+import MeshColorPicker from './MeshColorPicker'
 import MeshExtraToolsPanel, { EXTRA_TOOLS } from './MeshExtraToolsPanel'
 import { prepareBoundaries, smoothBoundary, newBoundaryLoops, nearestBoundaryVertex, boundarySegment, bridgeBoundaries, straightenBorderPreview, applyStraightenBorder } from '../utils/boundaryTools'
 import {
@@ -227,7 +229,11 @@ const createHoleLabelTexture = (text, color) => {
   return texture
 }
 
-export default function MeshModifier({ geometry, onClose, onApply, requireEditConsent }) {
+// title: titolo in alto; hideStandardTools: nasconde i gruppi di strumenti (da "Ripara mesh" a
+// "Modifica Bordo"), es. per la pagina Crea Marker Scan; extraSidebar: contenuto al loro posto
+// (anche una funzione ({ meshes, selectedMeshIndex, meshesRef, sceneRef, cameraRef, showMessage... }) => contenuto)
+// gridOverlay: griglia di riferimento sopra la vista all'apertura (il tasto G la mostra/nasconde)
+export default function MeshModifier({ geometry, onClose, onApply, requireEditConsent, title = 'Modificatore Mesh', hideStandardTools = false, extraSidebar = null, gridOverlay = false }) {
   const containerRef = useRef(null)
   const sceneRef = useRef(null)
   const rendererRef = useRef(null)
@@ -245,6 +251,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const fileInputRef = useRef(null)
   const selectedMeshHelperRef = useRef(null)
   const [message, setMessage] = useState('')
+  const [showGrid, setShowGrid] = useState(gridOverlay)
+  // livello sopra la vista 3D in cui la colonna esterna puo' mettere i suoi pulsanti (portal)
+  const [viewportOverlay, setViewportOverlay] = useState(null)
   const [meshes, setMeshes] = useState(geometry ? [{ geometry, name: 'Mesh iniziale', visible: true }] : [])
   // elenco aggiornato delle mesh, letto dai calcoli in background al termine
   const meshesStateRef = useRef(meshes)
@@ -296,6 +305,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const [isolatedBusy, setIsolatedBusy] = useState(false)
   // Offset con pennello
   const [showOffsetPanel, setShowOffsetPanel] = useState(false)
+  // Inverti Normali con pennello (zona colorata) o su tutta la mesh
+  const [showNormalsPanel, setShowNormalsPanel] = useState(false)
   const [brushData, setBrushData] = useState(null)
   const [brushDiameter, setBrushDiameter] = useState(1)
   const [brushErase, setBrushErase] = useState(false)
@@ -307,6 +318,12 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // letto dai gestori del mouse della scena, che non vengono ricreati a ogni render
   const brushStateRef = useRef({ active: false, painting: false })
   const brushHandlersRef = useRef(null)
+  // strumenti della colonna esterna (extraSidebar): { down(e) -> true se cattura il trascinamento,
+  // move(e), up(e), click(e) (clic senza trascinare), leave(), wheel(deltaY) -> true se usata }
+  const externalHandlersRef = useRef(null)
+  const externalStateRef = useRef({ capturing: false, down: null })
+  // centro della rotazione della vista: centro delle mesh visibili, preso a inizio trascinamento
+  const orbitPivotRef = useRef(new THREE.Vector3())
   const brushSceneRef = useRef(null)
   const brushFrameRef = useRef({ id: 0, event: null })
   const brushDataRef = useRef(null)
@@ -439,7 +456,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
   const getMeshDisplayColor = (mesh, index) => {
     if (mesh && mesh.color) return mesh.color
-    const hasVertexColors = !!mesh.geometry?.getAttribute?.('color')
+    const hasVertexColors = !!mesh.geometry?.getAttribute?.('color') && !mesh.forceColor
     if (hasVertexColors) {
       return '#999999'
     }
@@ -644,7 +661,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     meshesRef.current = []
     meshes.forEach((meshData, index) => {
       const clonedGeometry = meshData.geometry.clone()
-      const hasVertexColors = !!clonedGeometry.getAttribute('color')
+      // colori propri della mesh, se ne ha e l'utente non ha scelto un colore
+      const hasVertexColors = !!clonedGeometry.getAttribute('color') && !meshData.forceColor
       
       // Determina il colore: prima personalizzato, poi default per tipo di mesh
       let meshColor = meshColors[index % meshColors.length]
@@ -717,7 +735,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     if (
       savedView &&
       (savedCount === meshesRef.current.length ||
-        (savedCount < meshes.length && meshes.slice(savedCount).every((m) => m.displayFrame?.sourceIndex < savedCount)))
+        (savedCount < meshes.length && meshes.slice(savedCount).every((m) => m.displayFrame?.sourceIndex < savedCount)) ||
+        // tolte solo mesh in coda (es. la superficie senza sottosquadri): le altre restano dove sono
+        (meshes.length < savedCount && meshes.every((m, i) => m.geometry === savedView.geometries?.[i])))
     ) {
       camera.position.copy(savedView.cameraPosition)
       camera.quaternion.copy(savedView.cameraQuaternion)
@@ -731,6 +751,14 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     const onMouseDown = (e) => {
       if (e.button === 1) {
         e.preventDefault()
+      }
+      const external = externalHandlersRef.current
+      if (external) {
+        externalStateRef.current.down = { x: e.clientX, y: e.clientY, button: e.button }
+        if (e.button === 0 && external.down?.(e)) {
+          externalStateRef.current.capturing = true
+          return
+        }
       }
       // Offset con pennello: il clic sinistro sulla mesh colora invece di ruotare
       if (e.button === 0 && brushStateRef.current.active && brushHandlersRef.current?.down(e)) {
@@ -766,7 +794,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           }
         }
 
-        const intersects = raycaster.intersectObjects(meshesRef.current, true)
+        // le mesh nascoste non si cliccano (es. l'originale sotto la superficie senza sottosquadri)
+        const intersects = raycaster.intersectObjects(meshesRef.current.filter((m) => m.visible), true)
 
         if (manualMoveMode && meshesRef.current[selectedMeshIndex] && intersects.length > 0 && intersects[0].object === meshesRef.current[selectedMeshIndex]) {
           // start moving the selected mesh
@@ -780,21 +809,34 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const sph = cameraSphericalRef.current
           sph.setFromVector3(cameraRef.current.position.clone())
         } else {
-          // clicked a different mesh: select it (or middle-button: prepare to pan)
+          // clic su una mesh: la seleziona; col tasto sinistro la vista ruota come trascinando sullo
+          // sfondo (stessa rotazione libera), col centrale si prepara lo spostamento
           const clicked = intersects.length > 0 ? intersects[0].object : null
           if (clicked) {
             const idx = meshesRef.current.indexOf(clicked)
             if (idx !== -1) setSelectedMeshIndex(idx)
           }
-          cameraControlRef.current = false
+          cameraControlRef.current = e.button === 0
         }
       } catch (err) {
         cameraControlRef.current = false
+      }
+      if (cameraControlRef.current) {
+        // la vista ruota attorno al centro di cio' che si vede (es. la guida da sola), non al
+        // centro della scena
+        const box = new THREE.Box3()
+        meshesRef.current.forEach((m) => { if (m.visible) box.expandByObject(m) })
+        if (box.isEmpty()) orbitPivotRef.current.set(0, 0, 0)
+        else box.getCenter(orbitPivotRef.current)
       }
     }
 
     const onMouseMove = (e) => {
       lastMouseEventRef.current = e
+      if (externalHandlersRef.current) {
+        externalHandlersRef.current.move?.(e)
+        if (externalStateRef.current.capturing) return
+      }
       if (brushStateRef.current.active) {
         brushHandlersRef.current?.move(e)
         if (brushStateRef.current.painting) return
@@ -832,9 +874,11 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         const rotation = new THREE.Quaternion()
           .setFromAxisAngle(up, -deltaX * orbitSpeed)
           .multiply(new THREE.Quaternion().setFromAxisAngle(right, -deltaY * orbitSpeed))
-        camera.position.applyQuaternion(rotation)
+        // posizione e orientamento della telecamera ruotati attorno al centro scelto
+        const pivot = orbitPivotRef.current
+        camera.position.sub(pivot).applyQuaternion(rotation).add(pivot)
+        camera.quaternion.premultiply(rotation)
         camera.up.copy(up.applyQuaternion(rotation))
-        camera.lookAt(0, 0, 0)
         return
       }
 
@@ -908,6 +952,15 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
 
     const onMouseUp = (e) => {
+      const externalState = externalStateRef.current
+      const pressed = externalState.down
+      externalState.down = null
+      if (externalState.capturing) {
+        externalState.capturing = false
+        externalHandlersRef.current?.up?.(e)
+      } else if (pressed && pressed.button === 0 && Math.hypot(e.clientX - pressed.x, e.clientY - pressed.y) < 5) {
+        externalHandlersRef.current?.click?.(e)
+      }
       if (brushStateRef.current.painting) {
         brushStateRef.current.painting = false
         brushHandlersRef.current?.up()
@@ -929,7 +982,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     const onWheel = (e) => {
       e.preventDefault()
       // Ctrl + rotella con un pennello attivo: diametro invece dello zoom
-      if (e.ctrlKey && brushWheelRef.current?.(e.deltaY)) return
+      if (e.ctrlKey && (externalHandlersRef.current?.wheel?.(e.deltaY) || brushWheelRef.current?.(e.deltaY))) return
       // Always zoom the camera along its forward vector
       const camera = cameraRef.current
       if (!camera) return
@@ -960,6 +1013,12 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
 
     const onMouseLeave = () => {
+      if (externalStateRef.current.capturing) {
+        externalStateRef.current.capturing = false
+        externalHandlersRef.current?.up?.(null)
+      }
+      externalStateRef.current.down = null
+      externalHandlersRef.current?.leave?.()
       if (brushStateRef.current.painting) {
         brushStateRef.current.painting = false
         brushHandlersRef.current?.up()
@@ -1012,6 +1071,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         cameraPosition: camera.position.clone(),
         cameraQuaternion: camera.quaternion.clone(),
         meshes: meshesRef.current.map((m) => ({ position: m.position.clone(), rotation: m.rotation.clone() })),
+        geometries: meshes.map((m) => m.geometry),
       }
       cancelAnimationFrame(animationId)
       renderer.domElement.removeEventListener('mouseleave', onMouseLeave)
@@ -1142,7 +1202,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
 
   // Offset con pennello: preparazione della mesh selezionata (vertici uniti, normali, griglia)
   useEffect(() => {
-    const target = showOffsetPanel || cutTool ? meshes[selectedMeshIndex] : null
+    const target = showOffsetPanel || cutTool || showNormalsPanel ? meshes[selectedMeshIndex] : null
     if (!target) {
       setBrushData(null)
       setOffsetBusy(false)
@@ -1179,7 +1239,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       cancelled = true
       clearTimeout(timer)
     }
-  }, [showOffsetPanel, cutTool, selectedMeshIndex, meshes])
+  }, [showOffsetPanel, cutTool, showNormalsPanel, selectedMeshIndex, meshes])
 
   // Offset con pennello: nella vista la mesh usa i vertici uniti, così l'anteprima
   // dell'estrusione sposta direttamente i vertici; la zona colorata è un secondo
@@ -1372,6 +1432,18 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
   }, [cutTool, brushData, meshes, areaCut, areaOffset, areaInvert])
 
+  // Tasto G: griglia di riferimento sopra la vista (non mentre si scrive in un campo)
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'g' && event.key !== 'G') return
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]')) return
+      setShowGrid((visible) => !visible)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   // Free Form: Ctrl+Z annulla l'ultimo tratto
   useEffect(() => {
     if (!showFreeformPanel) return undefined
@@ -1390,18 +1462,53 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // con pennellate in prova gli altri strumenti sono bloccati)
   useEffect(() => {
     if (!showFreeformPanel) return
-    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || extraTool) {
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || extraTool || showNormalsPanel) {
       setShowFreeformPanel(false)
     }
-  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, extraTool])
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, extraTool, showNormalsPanel])
+
+  // Inverti Normali: si chiude quando si apre un altro strumento
+  useEffect(() => {
+    if (!showNormalsPanel) return
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || extraTool || showFreeformPanel) {
+      setShowNormalsPanel(false)
+    }
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, extraTool, showFreeformPanel])
+
+  // Inverti Normali: facce viste dal retro in azzurro (la normale e' rivolta dall'altra parte)
+  useEffect(() => {
+    if (!showNormalsPanel) return undefined
+    const sceneMesh = meshesRef.current[selectedMeshIndex]
+    if (!sceneMesh?.material) return undefined
+    const material = sceneMesh.material
+    const previousSide = material.side
+    material.side = THREE.FrontSide
+    material.needsUpdate = true
+    const back = new THREE.Mesh(
+      sceneMesh.geometry,
+      new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.BackSide, toneMapped: false })
+    )
+    back.raycast = () => {}
+    // il pennello sostituisce la geometria della mesh: il retro la segue
+    back.onBeforeRender = () => {
+      if (back.geometry !== sceneMesh.geometry) back.geometry = sceneMesh.geometry
+    }
+    sceneMesh.add(back)
+    return () => {
+      back.removeFromParent()
+      back.material.dispose()
+      material.side = previousSide
+      material.needsUpdate = true
+    }
+  }, [showNormalsPanel, selectedMeshIndex, meshes])
 
   // Strumenti Meshmixer: si chiudono quando si apre un altro strumento
   useEffect(() => {
     if (!extraTool) return
-    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || showFreeformPanel) {
+    if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || showFreeformPanel || showNormalsPanel) {
       setExtraTool(null)
     }
-  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, showFreeformPanel])
+  }, [repairMode, showSimplifyPanel, showIsolatedPanel, showOffsetPanel, showMirrorPanel, cutTool, borderTool, manualMoveMode, alignmentMode, showFreeformPanel, showNormalsPanel])
 
   // Taglia con Area / Linea: Ctrl+Z, Canc o Backspace tolgono l'ultimo punto
   // (su una linea chiusa riaprono prima il contorno)
@@ -1863,6 +1970,34 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     }
     const stats = JSON.parse(response.headers.get('X-Mesh-Stats') || '{}')
     return { geometry: transferVertexColors(geometry, loadPLY(await response.arrayBuffer())), stats }
+  }
+
+  // Chiamata al server mesh per la colonna esterna (extraSidebar): files { campo: geometria },
+  // fields { campo: valore }. Restituisce { geometry, stats } dal PLY e da X-Mesh-Stats.
+  const callMeshServer = async (endpoint, files, fields = {}) => {
+    if (!(await ensureServerOnline())) throw new Error(`${selectedServer.name} non è raggiungibile: avvia il server Python.`)
+    setServerOnline(true)
+    const form = new FormData()
+    Object.entries(files).forEach(([key, geometry]) => {
+      form.append(key, new Blob([geometryToBinarySTL(geometry)], { type: 'application/octet-stream' }), `${key}.stl`)
+    })
+    Object.entries(fields).forEach(([key, value]) => form.append(key, String(value)))
+    let response
+    try {
+      response = await fetch(apiUrl(selectedServer.url, endpoint), { method: 'POST', body: form })
+    } catch {
+      throw new Error(`connessione con ${selectedServer.name} interrotta: se hai aggiornato i file del server, chiudilo e riavvialo.`)
+    }
+    const outdated = 'il server in esecuzione non ha ancora questa funzione: chiudi e riavvia il server Python.'
+    if (response.status === 404) throw new Error(outdated)
+    if (!response.ok) {
+      let detail = response.statusText
+      try { detail = (await response.json()).detail || detail } catch { /* risposta non JSON */ }
+      throw new Error(detail)
+    }
+    const statsHeader = response.headers.get('X-Mesh-Stats')
+    if (!statsHeader) throw new Error(outdated)
+    return { geometry: loadPLY(await response.arrayBuffer()), stats: JSON.parse(statsHeader) }
   }
 
   const ensureServerOnline = async () => {
@@ -3108,7 +3243,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       setFreeformSettings((current) => ({ ...current, radius: Number(scaled(current.radius, step, maxRadius).toFixed(2)) }))
       return true
     }
-    const brushTool = showOffsetPanel || cutTool === 'Pennello'
+    const brushTool = showOffsetPanel || cutTool === 'Pennello' || showNormalsPanel
     if (!brushTool || !brushData || brushData.meshIndex !== selectedMeshIndex) return false
     const diagonal = brushData.mesh.diagonal
     const unit = 10 ** Math.floor(Math.log10(Math.max(diagonal, 1e-6) / 100))
@@ -3320,6 +3455,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   // Chiude tutti i pannelli degli strumenti (prima memorizza le modifiche in anteprima)
   const closeToolPanels = () => {
     const current = commitPendingEdits()
+    setShowNormalsPanel(false)
     setRepairMode(false)
     setSelectedHoleId(null)
     setShowSimplifyPanel(false)
@@ -3420,19 +3556,70 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   }
 
   // Inverti Normali: inverte l'orientamento di tutti i triangoli della mesh selezionata
-  const invertNormals = () => {
+  const toggleNormalsPanel = () => {
+    if (showNormalsPanel) {
+      setShowNormalsPanel(false)
+      return
+    }
     if (meshes.length === 0) return
-    const current = closeToolPanels()
+    closeToolPanels()
+    setShowNormalsPanel(true)
+  }
+
+  // tutta la mesh
+  const invertNormals = () => {
     const meshIndex = selectedMeshIndex
-    const target = current[meshIndex]
+    const target = meshes[meshIndex]
     if (!target) return
     try {
       replaceMeshGeometry(meshIndex, target.geometry, flipNormals(target.geometry), 'Inverti Normali')
-      showTimedMessage('✅ Normali invertite.')
+      showTimedMessage('✅ Normali di tutta la mesh invertite.')
     } catch (err) {
       showTimedMessage(`❌ Inversione non riuscita: ${err.message}`)
     }
   }
+
+  // solo i triangoli della zona colorata (tutti e tre i vertici colorati): ordine dei vertici invertito
+  const invertSelectedNormals = () => {
+    if (!brushData) return
+    const meshIndex = brushData.meshIndex
+    const target = meshes[meshIndex]
+    if (!target || target.geometry !== brushData.geometry) return
+    const { positions, colors, indices } = brushData.mesh
+    const { selected } = brushData
+    const flipped = indices.slice()
+    let count = 0
+    for (let t = 0; t < flipped.length; t += 3) {
+      if (selected[flipped[t]] && selected[flipped[t + 1]] && selected[flipped[t + 2]]) {
+        const b = flipped[t + 1]
+        flipped[t + 1] = flipped[t + 2]
+        flipped[t + 2] = b
+        count++
+      }
+    }
+    if (count === 0) return
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3))
+    if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors.slice(), 3))
+    geometry.setIndex(new THREE.BufferAttribute(flipped, 1))
+    geometry.computeVertexNormals()
+    geometry.computeBoundingBox()
+    geometry.computeBoundingSphere()
+    replaceMeshGeometry(meshIndex, target.geometry, geometry, `Inverti Normali (zona, ${count.toLocaleString('it-IT')} triangoli)`)
+    showTimedMessage(`✅ Normali invertite su ${count.toLocaleString('it-IT')} triangoli.`)
+  }
+
+  // triangoli della zona colorata, per il pannello
+  const selectedTriangleCount = useMemo(() => {
+    if (!showNormalsPanel || !brushData) return 0
+    const { indices } = brushData.mesh
+    const { selected } = brushData
+    let count = 0
+    for (let t = 0; t < indices.length; t += 3) {
+      if (selected[indices[t]] && selected[indices[t + 1]] && selected[indices[t + 2]]) count++
+    }
+    return count
+  }, [showNormalsPanel, brushData, offsetSelectedCount])
 
   // Riempi buchi: chiude in un colpo tutti i fori (levigati), tranne il bordo esterno della scansione
   // Il calcolo avviene in background: la pagina resta utilizzabile e si vede l'avanzamento.
@@ -3770,6 +3957,17 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       newPairs.push({ fixed: fm.position.clone().toArray(), moving: mm.position.clone().toArray(), index: idx })
     }
     setPointPairs(newPairs)
+  }
+
+  // colore scelto dall'utente per una mesh dell'elenco (vale anche sulle mesh con colori propri);
+  // il colore di partenza resta per "Colore originale"
+  const changeMeshColor = (index, hex) => {
+    setMeshes((prev) => prev.map((m, i) => (i === index
+      ? { ...m, color: hex, forceColor: true, originalColor: m.forceColor ? m.originalColor : (m.color ?? null) }
+      : m)))
+  }
+  const resetMeshColor = (index) => {
+    setMeshes((prev) => prev.map((m, i) => (i === index ? { ...m, color: m.originalColor ?? undefined, forceColor: false, originalColor: undefined } : m)))
   }
 
   const changeSelectedMeshColor = (hex) => {
@@ -4749,6 +4947,18 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       <div className="flex-1 relative p-6">
         <div className="absolute inset-0 rounded-[32px] bg-white border border-slate-200 shadow-2xl overflow-hidden">
           <div ref={containerRef} className="render-bg w-full h-full" />
+          {showGrid && (
+            // griglia leggera 6 x 6 linee, solo visiva (i clic passano alla vista)
+            <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <React.Fragment key={i}>
+                  <line x1={`${(i * 100) / 7}%`} y1="0" x2={`${(i * 100) / 7}%`} y2="100%" stroke="#ffffff" strokeOpacity="0.14" strokeWidth="1" />
+                  <line x1="0" y1={`${(i * 100) / 7}%`} x2="100%" y2={`${(i * 100) / 7}%`} stroke="#ffffff" strokeOpacity="0.14" strokeWidth="1" />
+                </React.Fragment>
+              ))}
+            </svg>
+          )}
+          <div ref={setViewportOverlay} className="pointer-events-none absolute inset-0" />
           {cutDraw && (
             <svg className="pointer-events-none absolute inset-0 h-full w-full">
               {cutDraw.type === 'Lazo' && (
@@ -4767,7 +4977,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         {/* Top bar with close button */}
         <div className="absolute top-6 left-6 right-6 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <h2 className="text-lg font-bold text-slate-900">Modificatore Mesh</h2>
+            <h2 className="text-lg font-bold text-slate-900">{title}</h2>
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <span>Backend</span>
               <select
@@ -5196,6 +5406,30 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 )}
               </div>
             </div>
+          )
+        })()}
+
+        {showNormalsPanel && meshes[selectedMeshIndex] && (() => {
+          const ready = brushData?.meshIndex === selectedMeshIndex
+          const diagonal = ready ? brushData.mesh.diagonal : 1
+          const unit = 10 ** Math.floor(Math.log10(Math.max(diagonal, 1e-6) / 100))
+          const step = unit / 10
+          const decimals = Math.max(0, -Math.round(Math.log10(step)))
+          const maxDiameter = Math.max(unit * 10, Math.ceil((diagonal * 0.3) / unit) * unit)
+          return (
+            <MeshNormalsPanel
+              meshName={meshes[selectedMeshIndex].name}
+              ready={ready}
+              diameter={{ value: brushDiameter, min: step, max: maxDiameter, step, decimals }}
+              onDiameter={(value) => setBrushDiameter(Math.min(maxDiameter, Math.max(step, Math.round((Number(value) || 0) / step) * step)))}
+              selectedCount={offsetSelectedCount}
+              selectedTriangles={selectedTriangleCount}
+              onClear={() => changeBrushSelection((data) => data.selected.fill(0))}
+              onInvertSelection={() => changeBrushSelection(invertSelection)}
+              onFlipSelected={invertSelectedNormals}
+              onFlipAll={invertNormals}
+              onClose={toggleNormalsPanel}
+            />
           )
         })()}
 
@@ -6204,6 +6438,13 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 key={index}
                 className={`mb-2 flex items-center justify-between gap-2 rounded-lg border px-2 py-2 ${selectedMeshIndex === index ? 'border-sky-300 bg-sky-50' : 'border-slate-200 bg-white'}`}
               >
+                <MeshColorPicker
+                  value={getMeshDisplayColor(mesh, index)}
+                  onChange={(hex) => changeMeshColor(index, hex)}
+                  onReset={mesh.forceColor ? () => resetMeshColor(index) : null}
+                  originalColor={mesh.forceColor ? mesh.originalColor || null : null}
+                  label={`Colore di ${mesh.name}`}
+                />
                 <button
                   type="button"
                   onClick={() => setSelectedMeshIndex(index)}
@@ -6280,6 +6521,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           </div>
         )}
 
+        {!hideStandardTools && (
+        <>
         <div className="space-y-2.5 pt-1">
           {[
             'Ripara mesh',
@@ -6320,7 +6563,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                               : label === 'Ponte'
                                 ? () => toggleExtraTool('bridge')
                               : label === 'Inverti Normali'
-                                ? invertNormals
+                                ? toggleNormalsPanel
                                 : label === 'Riempi buchi'
                                   ? fillAllHolesQuick
                                   : undefined
@@ -6345,6 +6588,8 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                         ? showOffsetPanel
                         : label === 'Specchia'
                           ? showMirrorPanel
+                          : label === 'Inverti Normali'
+                            ? showNormalsPanel
                           : label === 'Free Form'
                             ? showFreeformPanel
                             : label === 'Crea solido'
@@ -6360,6 +6605,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
                 (label === 'Offset con pennello' && showOffsetPanel) ||
                 (label === 'Specchia' && showMirrorPanel) ||
                 (label === 'Free Form' && showFreeformPanel) ||
+                (label === 'Inverti Normali' && showNormalsPanel) ||
                 (label === 'Crea solido' && extraTool === 'makeSolid') ||
                 (label === 'Ponte' && extraTool === 'bridge')
                   ? 'border-sky-400 bg-sky-50 text-sky-800'
@@ -6437,6 +6683,12 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             })}
           </div>
         </div>
+
+        </>
+        )}
+        {typeof extraSidebar === 'function'
+          ? extraSidebar({ meshes, setMeshes, canvasHandlersRef: externalHandlersRef, viewportOverlay, callMeshServer, rendererRef, selectedMeshIndex, setSelectedMeshIndex, meshesRef, sceneRef, cameraRef, showMessage: showTimedMessage })
+          : extraSidebar}
 
         <div className="mt-6 flex items-center gap-3">
           <button

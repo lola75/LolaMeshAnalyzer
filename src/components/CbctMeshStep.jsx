@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { MESH_EXPORT_FORMATS } from '../utils/meshFileWriters'
+import MeshColorPicker, { hexFromRgb, rgbFromHex } from './MeshColorPicker'
 
 const button = 'px-3 py-1.5 rounded-lg text-sm border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent'
 
 const colorCss = ([r, g, b]) => `rgb(${r}, ${g}, ${b})`
 
 // Passo 2 del Wizard volume: importazione degli oggetti 3D (scansioni, ceratura, guide...)
-export default function CbctMeshStep({ busy, objects, selectedId, onSelect, onImport, onRemove, onToggleVisible, onEdit, onMatch, onExport }) {
+export default function CbctMeshStep({ busy, objects, selectedId, onSelect, onImport, onRemove, onToggleVisible, onColor, onEdit, onMatch, onExport }) {
   const selected = objects.find((o) => o.id === selectedId)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const exportMenuRef = useRef(null)
@@ -86,10 +87,23 @@ export default function CbctMeshStep({ busy, objects, selectedId, onSelect, onIm
                     aria-label={`${object.visible ? 'Nascondi' : 'Mostra'} ${object.type}`}
                     className="w-4 h-4 shrink-0 accent-sky-600 cursor-pointer"
                   />
-                  <span
-                    className={`w-3 h-3 rounded-full shrink-0 border border-black/10 ${object.visible ? '' : 'opacity-30'}`}
-                    style={{ background: colorCss(object.color) }}
-                  />
+                  {onColor ? (
+                    <span className={object.visible ? '' : 'opacity-40'}>
+                      <MeshColorPicker
+                        value={hexFromRgb(object.color)}
+                        onChange={(hex) => onColor(object.id, rgbFromHex(hex))}
+                        onReset={object.originalColor ? () => onColor(object.id, object.originalColor, true) : null}
+                        originalColor={object.originalColor ? hexFromRgb(object.originalColor) : null}
+                        label={`Colore di ${object.type}`}
+                        className="h-3.5 w-3.5"
+                      />
+                    </span>
+                  ) : (
+                    <span
+                      className={`w-3 h-3 rounded-full shrink-0 border border-black/10 ${object.visible ? '' : 'opacity-30'}`}
+                      style={{ background: colorCss(object.color) }}
+                    />
+                  )}
                   <div className={`flex-1 min-w-0 ${object.visible ? '' : 'opacity-50'}`}>
                     <div className="text-sm text-slate-900 truncate">{object.type}</div>
                     <div className="text-[11px] text-slate-500 truncate" title={object.fileName}>{object.fileName}</div>
