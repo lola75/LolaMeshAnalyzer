@@ -5,11 +5,15 @@ import MarkerScanTools from './MarkerScanTools'
 // Pagina "Crea Marker Scan" (Strumenti > CBCT): stessa pagina del Modificatore mesh (caricamento
 // delle mesh, vista 3D, storico, Applica / Ignora modifiche) senza i suoi gruppi di strumenti, al
 // posto dei quali ci sono gli strumenti della guida (Rimozione Sottosquadri, Generazione Guida).
-export default function MarkerScanPage({ onClose }) {
+// initialMeshes: mesh portate dal Modificatore (con le modifiche fatte), altrimenti pagina vuota
+// onOpenModifier(meshes): pulsante "Modifica Mesh" sulla vista, porta le mesh nel Modificatore
+export default function MarkerScanPage({ onClose, initialMeshes = null, onOpenModifier = null }) {
   return (
     <div className="fixed inset-0 z-50">
       <MeshModifier
         geometry={null}
+        initialMeshes={initialMeshes}
+        onOpenModifier={onOpenModifier}
         title="Crea Marker Scan"
         hideStandardTools
         gridOverlay

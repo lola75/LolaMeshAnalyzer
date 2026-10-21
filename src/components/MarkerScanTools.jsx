@@ -39,7 +39,7 @@ const GUIDE_DEFAULTS = {
   pinSupportAngle: 10,
   extrusionAngle: 20,
   sleeveTolerance: 0.12,
-  sleevesTopProtection: true,
+  sleevesTopProtection: false,
   optimizeFor3DPrinting: false,
 }
 const WINDOW_DEFAULTS = { depth: 50, size: 6.79, normalToSurface: false }
@@ -287,7 +287,7 @@ export default function MarkerScanTools({ meshes = [], setMeshes, canvasHandlers
     setGenerating(true)
     showMessage?.('⏳ Creazione della guida (server mesh)...')
     setProgressTask({
-      title: 'Creazione della dima',
+      title: 'Creazione Marker Scan',
       stages: [
         'Preparazione della regione',
         'Maglia regolare e levigatura',
@@ -778,7 +778,7 @@ export default function MarkerScanTools({ meshes = [], setMeshes, canvasHandlers
           <Switch label="Add Sleeves Support Top Protection" checked={guide.sleevesTopProtection} onChange={(v) => setG({ sleevesTopProtection: v })} />
           <Switch label="Optimize Guide For 3D Printing" checked={guide.optimizeFor3DPrinting} onChange={(v) => setG({ optimizeFor3DPrinting: v })} />
           <button type="button" className={`${button} border-sky-700 bg-sky-600 text-white hover:bg-sky-700`} disabled={blockoutIndex < 0 || region.selected === 0 || generating} onClick={createGuide}>
-            {generating ? '⏳ Creazione guida...' : 'Crea guida'}
+            {generating ? '⏳ Creazione Marker Scan...' : 'Crea Marker Scan'}
           </button>
           <button type="button" className={plainButton} disabled={guideIndex < 0 || generating} onClick={deleteGuide}>Cancella guida</button>
           {guideIndex >= 0 && (

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
+import LightingControl from './LightingControl'
+import { setupViewerLighting } from '../utils/viewerLighting'
 import { analyzeNormals, createNormalVisualization } from '../utils/normalAnalyzer'
 import MeshModifier from './MeshModifier'
 
@@ -27,6 +29,7 @@ export default function MeshViewer({
   editableMeshes = null,
   editTargetId = null,
   onApplyEdit = null,
+  onOpenMarkerScan = null, // mesh del Modificatore portate in Crea Marker Scan
 }) {
   const containerRef = useRef(null)
   const sceneRef = useRef(null)
@@ -188,25 +191,7 @@ export default function MeshViewer({
     sceneRef.current = scene
 
     // Add lighting
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.65)
-    hemiLight.position.set(0, 20, 0)
-    scene.add(hemiLight)
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9)
-    scene.add(ambientLight)
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2)
-    directionalLight.position.set(5, 10, 7)
-    directionalLight.castShadow = true
-    scene.add(directionalLight)
-
-    const fillLight = new THREE.PointLight(0xffffff, 0.55)
-    fillLight.position.set(-5, 5, 5)
-    scene.add(fillLight)
-
-    const backLight = new THREE.DirectionalLight(0xffffff, 0.45)
-    backLight.position.set(-5, 5, -5)
-    scene.add(backLight)
+    // le luci (legate alla telecamera) si aggiungono dopo telecamera e mesh: setupViewerLighting
 
     // Camera
     const width = containerRef.current.clientWidth
@@ -458,6 +443,9 @@ export default function MeshViewer({
     camera.lookAt(new THREE.Vector3(0, 0, 0))
     cameraRef.current = camera
 
+    // illuminazione condivisa con le altre viste (stile e luminosita' dal pulsante "Luce")
+    const lighting = setupViewerLighting(scene, camera, renderer)
+
     // Analizza normali
     const analysis = analyzeNormals(geometry)
     setNormalAnalysis(analysis)
@@ -708,6 +696,7 @@ export default function MeshViewer({
       window.removeEventListener('resize', handleResize)
       window.removeEventListener('keydown', onKeyDown)
       // dispose created resources
+      lighting.dispose()
       pmremGenerator.dispose && pmremGenerator.dispose()
       renderer.dispose()
       material.dispose && material.dispose()
@@ -1045,6 +1034,8 @@ export default function MeshViewer({
               {normalAnalysis.hasIssues ? '⚠️' : '✅'} Normali
             </div>
           )}
+
+          <LightingControl variant="dark" className="pointer-events-auto" />
         </div>
       </div>
 
@@ -1139,6 +1130,10 @@ export default function MeshViewer({
         <MeshModifier
           geometry={modifierGeometry}
           onClose={() => setShowMeshModifier(false)}
+          onOpenMarkerScan={onOpenMarkerScan ? (list) => {
+            setShowMeshModifier(false)
+            onOpenMarkerScan(list)
+          } : null}
           onApply={(edited) => {
             if (onApplyEdit && editingId != null) onApplyEdit(editingId, edited)
             else setEditedGeometry(edited)

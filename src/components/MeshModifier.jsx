@@ -24,6 +24,9 @@ import { transferVertexColors } from '../utils/meshColorTransfer'
 import MeshFreeformPanel from './MeshFreeformPanel'
 import MeshNormalsPanel from './MeshNormalsPanel'
 import MeshColorPicker from './MeshColorPicker'
+import LightingControl from './LightingControl'
+import ViewRotateWidget from './ViewRotateWidget'
+import { setupViewerLighting } from '../utils/viewerLighting'
 import MeshExtraToolsPanel, { EXTRA_TOOLS } from './MeshExtraToolsPanel'
 import { prepareBoundaries, smoothBoundary, newBoundaryLoops, nearestBoundaryVertex, boundarySegment, bridgeBoundaries, straightenBorderPreview, applyStraightenBorder } from '../utils/boundaryTools'
 import {
@@ -233,7 +236,10 @@ const createHoleLabelTexture = (text, color) => {
 // "Modifica Bordo"), es. per la pagina Crea Marker Scan; extraSidebar: contenuto al loro posto
 // (anche una funzione ({ meshes, selectedMeshIndex, meshesRef, sceneRef, cameraRef, showMessage... }) => contenuto)
 // gridOverlay: griglia di riferimento sopra la vista all'apertura (il tasto G la mostra/nasconde)
-export default function MeshModifier({ geometry, onClose, onApply, requireEditConsent, title = 'Modificatore Mesh', hideStandardTools = false, extraSidebar = null, gridOverlay = false }) {
+// initialMeshes: elenco di mesh con cui aprire (es. quelle portate dal Modificatore in Crea Marker
+// Scan); onOpenMarkerScan(meshes) / onOpenModifier(meshes): pulsanti sulla vista che portano le mesh
+// attuali, con tutte le modifiche fatte e senza salvarle, in Crea Marker Scan o nel Modificatore
+export default function MeshModifier({ geometry, initialMeshes = null, onClose, onApply, onOpenMarkerScan = null, onOpenModifier = null, requireEditConsent, title = 'Modificatore Mesh', hideStandardTools = false, extraSidebar = null, gridOverlay = false }) {
   const containerRef = useRef(null)
   const sceneRef = useRef(null)
   const rendererRef = useRef(null)
@@ -254,7 +260,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const [showGrid, setShowGrid] = useState(gridOverlay)
   // livello sopra la vista 3D in cui la colonna esterna puo' mettere i suoi pulsanti (portal)
   const [viewportOverlay, setViewportOverlay] = useState(null)
-  const [meshes, setMeshes] = useState(geometry ? [{ geometry, name: 'Mesh iniziale', visible: true }] : [])
+  const [meshes, setMeshes] = useState(() => (initialMeshes?.length ? initialMeshes : geometry ? [{ geometry, name: 'Mesh iniziale', visible: true }] : []))
   // elenco aggiornato delle mesh, letto dai calcoli in background al termine
   const meshesStateRef = useRef(meshes)
   meshesStateRef.current = meshes
@@ -324,6 +330,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
   const externalStateRef = useRef({ capturing: false, down: null })
   // centro della rotazione della vista: centro delle mesh visibili, preso a inizio trascinamento
   const orbitPivotRef = useRef(new THREE.Vector3())
+  const viewAnimationRef = useRef(0)
   const brushSceneRef = useRef(null)
   const brushFrameRef = useRef({ id: 0, event: null })
   const brushDataRef = useRef(null)
@@ -599,30 +606,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     scene.background = null
     sceneRef.current = scene
 
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6)
-    hemiLight.position.set(0, 20, 0)
-    scene.add(hemiLight)
-
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9)
-    scene.add(ambientLight)
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2)
-    directionalLight.position.set(5, 10, 7)
-    directionalLight.castShadow = true
-    directionalLight.shadow.mapSize.set(2048, 2048)
-    directionalLight.shadow.camera.near = 0.5
-    directionalLight.shadow.camera.far = 50
-    if (directionalLight.shadow.camera.isOrthographicCamera) {
-      directionalLight.shadow.camera.left = -10
-      directionalLight.shadow.camera.right = 10
-      directionalLight.shadow.camera.top = 10
-      directionalLight.shadow.camera.bottom = -10
-    }
-    scene.add(directionalLight)
-
-    const fillLight = new THREE.PointLight(0xffffff, 0.5)
-    fillLight.position.set(-5, 5, 5)
-    scene.add(fillLight)
+    // le luci (legate alla telecamera) si aggiungono dopo la telecamera e le mesh: setupViewerLighting
 
     // Camera
     const width = containerRef.current.clientWidth
@@ -721,6 +705,9 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         cameraZ = Math.max(cameraZ, calculatedZ * 1.5)
       }
     })
+
+    // illuminazione condivisa con le altre viste (stile e luminosita' dal pulsante "Luce")
+    const lighting = setupViewerLighting(scene, camera, renderer)
 
     // Position camera to frame all meshes
     camera.position.z = cameraZ
@@ -1073,6 +1060,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         meshes: meshesRef.current.map((m) => ({ position: m.position.clone(), rotation: m.rotation.clone() })),
         geometries: meshes.map((m) => m.geometry),
       }
+      lighting.dispose()
       cancelAnimationFrame(animationId)
       renderer.domElement.removeEventListener('mouseleave', onMouseLeave)
       renderer.domElement.removeEventListener('mousedown', onMouseDown)
@@ -1998,6 +1986,85 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
     const statsHeader = response.headers.get('X-Mesh-Stats')
     if (!statsHeader) throw new Error(outdated)
     return { geometry: loadPLY(await response.arrayBuffer()), stats: JSON.parse(statsHeader) }
+  }
+
+  // Cubo di orientamento: rotazioni di 90 gradi della vista (animate) attorno al centro delle mesh
+  // visibili, partendo dalla posizione attuale della telecamera
+  const visibleCenter = () => {
+    const box = new THREE.Box3()
+    meshesRef.current.forEach((m) => { if (m.visible) box.expandByObject(m) })
+    return box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
+  }
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
+  const animateView = (update, duration = 380) => {
+    cancelAnimationFrame(viewAnimationRef.current)
+    const start = performance.now()
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / duration)
+      update(ease(t))
+      if (t < 1) viewAnimationRef.current = requestAnimationFrame(step)
+    }
+    viewAnimationRef.current = requestAnimationFrame(step)
+  }
+  const rotateView = (kind) => {
+    const camera = cameraRef.current
+    if (!camera) return
+    const pivot = visibleCenter()
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion)
+    // freccia su: la telecamera sale sopra il modello (da FRONTE a SOPRA); frecce curve: rotazione
+    // del modello sullo schermo in senso orario / antiorario
+    const [axis, degrees] = {
+      up: [right, -90], down: [right, 90], left: [up, -90], right: [up, 90], cw: [back, 90], ccw: [back, -90],
+    }[kind]
+    const total = THREE.MathUtils.degToRad(degrees)
+    let done = 0
+    animateView((e) => {
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, total * e - done)
+      done = total * e
+      camera.position.sub(pivot).applyQuaternion(q).add(pivot)
+      camera.quaternion.premultiply(q)
+      camera.up.applyQuaternion(q)
+    })
+  }
+  // vista frontale: la telecamera davanti al modello, alla stessa distanza
+  const frontView = () => {
+    const camera = cameraRef.current
+    if (!camera) return
+    const pivot = visibleCenter()
+    const distance = camera.position.distanceTo(pivot)
+    const from = camera.quaternion.clone()
+    const to = new THREE.Quaternion()
+    animateView((e) => {
+      camera.quaternion.slerpQuaternions(from, to, e)
+      camera.position.copy(pivot).add(new THREE.Vector3(0, 0, distance).applyQuaternion(camera.quaternion))
+      camera.up.set(0, 1, 0).applyQuaternion(camera.quaternion)
+    })
+  }
+
+  // Porta le mesh in un'altra pagina (Crea Marker Scan o Modificatore): si memorizzano le modifiche
+  // in sospeso (offset, specchia, pennellate Free Form non applicate), senza salvare nulla
+  const sendMeshesTo = (open) => {
+    if (!open || meshes.length === 0) return
+    let list = commitPendingEdits()
+    if (freeformDirty) {
+      const geometry = freeform.result()
+      if (geometry) list = list.map((m, i) => (i === freeformIndex ? { ...m, geometry } : m))
+    }
+    // la mesh scelta va per prima: Crea Marker Scan lavora sulla prima mesh dell'elenco
+    const chosen = Math.min(Math.max(selectedMeshIndex ?? 0, 0), list.length - 1)
+    const ordered = [list[chosen], ...list.filter((_, i) => i !== chosen)]
+    // le parti ricavate da un'altra mesh (es. parte tagliata) restano nella stessa posizione
+    const newIndex = (old) => (old === chosen ? 0 : old < chosen ? old + 1 : old)
+    open(ordered.map(({ geometry, name, visible, color, forceColor, displayFrame }) => ({
+      geometry,
+      name,
+      visible: visible !== false,
+      color,
+      forceColor,
+      ...(displayFrame ? { displayFrame: displayFrame.sourceIndex == null ? displayFrame : { ...displayFrame, sourceIndex: newIndex(displayFrame.sourceIndex) } } : {}),
+    })))
   }
 
   const ensureServerOnline = async () => {
@@ -4947,6 +5014,36 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
       <div className="flex-1 relative p-6">
         <div className="absolute inset-0 rounded-[32px] bg-white border border-slate-200 shadow-2xl overflow-hidden">
           <div ref={containerRef} className="render-bg w-full h-full" />
+          <div className="absolute right-6 top-20 z-10 flex items-start gap-2">
+            {onOpenModifier && meshes.length > 0 && (
+              <button
+                type="button"
+                onClick={() => sendMeshesTo(onOpenModifier)}
+                title="Porta le mesh (modello, superficie senza sottosquadri, guida...) nel Modificatore mesh per modificarle o esportarle, senza salvarle"
+                className="flex h-8 items-center gap-1.5 rounded-lg border border-orange-600 bg-orange-500 px-3 text-xs font-semibold text-white shadow-sm hover:bg-orange-600"
+              >
+                Modifica Mesh
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </button>
+            )}
+            {onOpenMarkerScan && meshes.length > 0 && (
+              <button
+                type="button"
+                onClick={() => sendMeshesTo(onOpenMarkerScan)}
+                title="Porta le mesh, con le modifiche fatte, in Crea Marker Scan (senza salvarle)"
+                className="flex h-8 items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-400 px-3 text-xs font-semibold text-slate-900 shadow-sm hover:bg-amber-300"
+              >
+                Crea Marker Scan
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </button>
+            )}
+            <LightingControl />
+          </div>
+          <ViewRotateWidget cameraRef={cameraRef} onRotate={rotateView} onHome={frontView} className="!absolute bottom-6 left-6 z-10" />
           {showGrid && (
             // griglia leggera 6 x 6 linee, solo visiva (i clic passano alla vista)
             <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
@@ -5051,7 +5148,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         )}
 
         {repairMode && alignmentMode !== 'point-align' && (
-          <div className="absolute bottom-8 left-8 w-[360px] max-h-[70%] flex flex-col bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+          <div className="absolute bottom-8 left-[164px] w-[360px] max-h-[70%] flex flex-col bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
             <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
               <div>
                 <div className="text-sm font-semibold text-slate-900">Ripara mesh</div>
@@ -5220,7 +5317,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const expectedTriangles = Math.max(4, Math.round(currentTriangles * (1 - reductionPercent / 100)))
           const setPercent = (value) => setReductionPercent(Math.min(100, Math.max(0, Math.round(Number(value) || 0))))
           return (
-            <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+            <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Semplifica Mesh</div>
@@ -5306,7 +5403,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const setRatio = (value) => setIsolatedRatio(Math.min(100, Math.max(0, Math.round((Number(value) || 0) * 10) / 10)))
           const canUndo = lastEditUndoable()
           return (
-            <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+            <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Rimuovi componenti isolati</div>
@@ -5483,7 +5580,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
           const canUndo = lastEditUndoable()
           const numberClass = 'w-16 px-1.5 py-0.5 border border-slate-300 rounded-md text-sm text-right tabular-nums'
           return (
-            <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+            <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Offset con pennello</div>
@@ -5614,7 +5711,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         })()}
 
         {showMirrorPanel && alignmentMode !== 'point-align' && meshes[selectedMeshIndex] && (
-          <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+          <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
             <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
               <div>
                 <div className="text-sm font-semibold text-slate-900">Specchia</div>
@@ -5740,7 +5837,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             const pointCount = curve ? curve.points.length : 0
             const maxSmoothDistance = Math.max(unit * 10, Math.ceil((diagonal * 0.05) / unit) * unit)
             return (
-              <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+              <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
                 {header}
                 <div className="px-4 py-3 space-y-3">
                   {!ready ? (
@@ -5825,7 +5922,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             const maxOffset = Math.max(unit * 10, Math.ceil((diagonal * 0.05) / unit) * unit)
             const maxDepth = Math.max(unit * 20, Math.ceil((diagonal * 0.2) / unit) * unit)
             return (
-              <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+              <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
                 <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                   <div>
                     <div className="text-sm font-semibold text-slate-900">Taglia con Area</div>
@@ -5904,7 +6001,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             )
           }
           return (
-            <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+            <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">Taglia con {cutTool}</div>
@@ -6077,7 +6174,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
             'Estendi bordo': 'Aggiunge una fascia di triangoli oltre il bordo aperto, lunga la distanza scelta.',
           }[borderTool]
           return (
-            <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+            <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
               <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
                 <div>
                   <div className="text-sm font-semibold text-slate-900">{borderTool}</div>
@@ -6196,7 +6293,7 @@ export default function MeshModifier({ geometry, onClose, onApply, requireEditCo
         })()}
 
         {remeshPanelVisible && (
-          <div className="absolute bottom-8 left-8 w-[380px] max-h-[75%] flex flex-col bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+          <div className="absolute bottom-8 left-[164px] w-[380px] max-h-[75%] flex flex-col bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
             <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
               <div>
                 <div className="text-sm font-semibold text-slate-900">{remeshCompare.title}: prima / dopo</div>

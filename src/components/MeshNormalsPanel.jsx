@@ -6,7 +6,7 @@ export default function MeshNormalsPanel({ meshName, ready, diameter, onDiameter
   const { value, min, max, step, decimals } = diameter
   const button = 'px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed'
   return (
-    <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+    <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
         <div>
           <div className="text-sm font-semibold text-slate-900">Inverti Normali</div>

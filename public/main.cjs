@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron')
 // electron-is-dev v3 è solo ESM: si usa il controllo integrato di Electron
 const isDev = !app.isPackaged
 const path = require('path')
@@ -198,6 +198,13 @@ ipcMain.handle('select-cbct-source', async (event, { kind }) => {
 })
 
 app.on('before-quit', () => {
+  // le impostazioni salvate dalla pagina (luce, colori predefiniti...) vanno subito su disco:
+  // Electron le scrive con ritardo e chiudendo l'app l'ultima scelta potrebbe perdersi
+  try {
+    session.defaultSession.flushStorageData()
+  } catch (error) {
+    console.warn('Salvataggio impostazioni non riuscito:', error)
+  }
   Object.keys(PYTHON_SERVERS).forEach(stopPythonServer)
 })
 

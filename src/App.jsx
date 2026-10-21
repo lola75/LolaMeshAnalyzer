@@ -15,6 +15,8 @@ import PasswordPromptModal from './components/PasswordPromptModal'
 import SplashScreen from './components/SplashScreen'
 import ChatWindow from './components/ChatWindow'
 import ScoreBar from './components/ScoreBar'
+import MeshModifier from './components/MeshModifier'
+import { extractMetadata } from './utils/metadataExtractor'
 import MeshColorPicker, { hexFromNumber, numberFromHex } from './components/MeshColorPicker'
 import { ChatProvider } from './contexts/ChatContext'
 
@@ -57,6 +59,9 @@ function AppContent() {
   }
   const [showDicomFilter, setShowDicomFilter] = useState(false)
   const [showMarkerScan, setShowMarkerScan] = useState(false)
+  const [markerScanMeshes, setMarkerScanMeshes] = useState(null) // mesh portate dal Modificatore
+  const [markerScanKey, setMarkerScanKey] = useState(0) // nuova pagina quando arrivano mesh nuove
+  const [modifierMeshes, setModifierMeshes] = useState(null) // Modificatore aperto da Crea Marker Scan
   const [showMMXSettings, setShowMMXSettings] = useState(false)
   const dentaxTimerRef = React.useRef(null)
 
@@ -476,7 +481,7 @@ function AppContent() {
                   <button className="workspace-subaction" onClick={() => setShowDicomFilter(true)}>
                     Filtra immagini DICOM
                   </button>
-                  <button className="workspace-subaction" onClick={() => setShowMarkerScan(true)}>
+                  <button className="workspace-subaction" onClick={() => { setMarkerScanMeshes(null); setShowMarkerScan(true) }}>
                     Crea Marker Scan
                   </button>
                 </div>
@@ -539,6 +544,11 @@ function AppContent() {
                 editableMeshes={editableMeshes}
                 editTargetId={activeMeshId}
                 onApplyEdit={applyMeshEdit}
+                onOpenMarkerScan={(list) => {
+                  setMarkerScanMeshes(list)
+                  setMarkerScanKey((k) => k + 1)
+                  setShowMarkerScan(true)
+                }}
               />
             ) : (
               <div className="workspace-empty-viewer">
@@ -576,7 +586,42 @@ function AppContent() {
       {showSurgery && <SurgeryPage onClose={() => setShowSurgery(false)} />}
       {showCbct && <CbctPage onClose={() => setShowCbct(false)} />}
       {showDicomFilter && <DicomFilterPage onClose={() => setShowDicomFilter(false)} />}
-      {showMarkerScan && <MarkerScanPage onClose={() => setShowMarkerScan(false)} />}
+      {showMarkerScan && (
+        <MarkerScanPage
+          key={markerScanKey}
+          initialMeshes={markerScanMeshes}
+          onOpenModifier={setModifierMeshes}
+          onClose={() => {
+            setShowMarkerScan(false)
+            setMarkerScanMeshes(null)
+          }}
+        />
+      )}
+
+      {/* Modificatore aperto da Crea Marker Scan: sopra la pagina, che resta com'era sotto.
+          Applica modifiche aggiunge la mesh alla pagina principale (ed eventualmente la salva su
+          file); il pulsante "Crea Marker Scan" riporta le mesh modificate in Crea Marker Scan. */}
+      {modifierMeshes && (
+        <div className="fixed inset-0 z-[60]">
+          <MeshModifier
+            geometry={null}
+            initialMeshes={modifierMeshes}
+            requireEditConsent={false}
+            onClose={() => setModifierMeshes(null)}
+            onApply={(geometry) => {
+              const fileName = 'Marker Scan modificato.stl'
+              handleFileLoaded({ fileName, geometry, metadata: extractMetadata(geometry, { name: fileName, size: 0 }, 'stl') })
+              setModifierMeshes(null)
+            }}
+            onOpenMarkerScan={(list) => {
+              setMarkerScanMeshes(list)
+              setMarkerScanKey((k) => k + 1)
+              setShowMarkerScan(true)
+              setModifierMeshes(null)
+            }}
+          />
+        </div>
+      )}
       <MMXSettings isOpen={showMMXSettings} onClose={() => setShowMMXSettings(false)} />
 
       <ChatWindow />

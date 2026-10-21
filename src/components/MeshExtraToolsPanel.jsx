@@ -16,7 +16,7 @@ const secondary = 'px-3 py-1.5 rounded-lg text-sm border border-slate-300 text-s
 export default function MeshExtraToolsPanel({ tool, meshName, busy, params, onParams, info, onApply, onReset, onClose }) {
   const set = (patch) => onParams(patch)
   return (
-    <div className="absolute bottom-8 left-8 w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
+    <div className="absolute bottom-8 left-[164px] w-[360px] bg-white/95 border border-slate-200 rounded-2xl shadow-2xl backdrop-blur-sm text-slate-800">
       <div className="flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-slate-200">
         <div>
           <div className="text-sm font-semibold text-slate-900">{EXTRA_TOOLS[tool]}</div>
