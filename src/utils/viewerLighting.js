@@ -9,6 +9,26 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 // poca luce diffusa e riflessi morbidi da una "stanza" virtuale (environment).
 // Stile e luminosita' sono condivisi da tutte le viste e restano salvati.
 
+// Campo visivo delle viste 3D: stretto, come nei CAD dentali, cosi' il modello non
+// si deforma quando e' vicino ai bordi dello schermo (con 75 gradi ai bordi si allungava di circa
+// il 60%, con 15 gradi meno del 2%); la telecamera sta piu' lontana e la grandezza resta la stessa
+export const VIEW_FOV = 15
+
+// Orientamento delle scansioni dentali (come in Meshmixer): l'asse Z del file e' verso l'alto
+// (arcata superiore sopra l'inferiore) e gli incisivi guardano verso +Y. La vista frontale guarda
+// i denti di fronte, con Z in alto. Si orienta la telecamera, i dati non cambiano.
+export const DENTAL_UP = [0, 0, 1]
+export const DENTAL_FRONT = [0, 1, 0] // dal modello verso la telecamera, nella vista frontale
+
+// orientamento della telecamera nella vista frontale
+export function dentalFrontQuaternion() {
+  const m = new THREE.Matrix4().lookAt(new THREE.Vector3(...DENTAL_FRONT), new THREE.Vector3(), new THREE.Vector3(...DENTAL_UP))
+  return new THREE.Quaternion().setFromRotationMatrix(m)
+}
+
+// mm (unita' della scena) per pixel alla distanza `depth` dalla telecamera
+export const worldPerPixel = (camera, depth, heightPx) => (2 * depth * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, heightPx)
+
 export const LIGHTING_STYLES = {
   studio: { label: 'Studio', key: 2.4, fill: 0.8, rim: 1.1, hemi: 0.35, ambient: 0.12, environment: 0.5 },
   morbida: { label: 'Morbida', key: 1.6, fill: 1.0, rim: 0.6, hemi: 0.6, ambient: 0.3, environment: 0.7 },

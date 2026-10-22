@@ -10,13 +10,15 @@ import * as THREE from 'three'
 // onHome(): vista frontale.
 
 const SIZE = 46 // lato del cubo (px)
+// facce del cubo negli assi della scena, con l'orientamento delle scansioni dentali (Z in alto,
+// incisivi verso +Y): FRONTE = +Y, SOPRA = +Z; DESTRA e SINISTRA come le vede chi guarda di fronte
 const FACES = [
-  { label: 'FRONTE', transform: `translateZ(${SIZE / 2}px)` },
-  { label: 'RETRO', transform: `rotateY(180deg) translateZ(${SIZE / 2}px)` },
-  { label: 'DESTRA', transform: `rotateY(90deg) translateZ(${SIZE / 2}px)` },
-  { label: 'SINISTRA', transform: `rotateY(-90deg) translateZ(${SIZE / 2}px)` },
-  { label: 'SOPRA', transform: `rotateX(90deg) translateZ(${SIZE / 2}px)` },
-  { label: 'SOTTO', transform: `rotateX(-90deg) translateZ(${SIZE / 2}px)` },
+  { label: 'SOPRA', transform: `translateZ(${SIZE / 2}px)` }, // +Z
+  { label: 'SOTTO', transform: `rotateY(180deg) translateZ(${SIZE / 2}px)` }, // -Z
+  { label: 'SINISTRA', transform: `rotateY(90deg) translateZ(${SIZE / 2}px)` }, // +X
+  { label: 'DESTRA', transform: `rotateY(-90deg) translateZ(${SIZE / 2}px)` }, // -X
+  { label: 'FRONTE', transform: `rotateX(90deg) translateZ(${SIZE / 2}px)` }, // +Y
+  { label: 'RETRO', transform: `rotateX(-90deg) translateZ(${SIZE / 2}px)` }, // -Y
 ]
 
 // frecce attorno al cubo: pallini scuri ben visibili sullo sfondo blu della vista

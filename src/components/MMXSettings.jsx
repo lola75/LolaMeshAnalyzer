@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
+// VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: i percorsi di Meshmixer e RealGuide (meshmixerPath, realguideVirtualPath).
 export default function MMXSettings({ isOpen, onClose }) {
   const [config, setConfig] = useState({
     meshmixerPath: '',

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { weldGeometry, findBoundaryLoops } from './holeFiller'
 
-// Strumenti sui bordi aperti di una mesh (come in Meshmixer):
+// Strumenti sui bordi aperti di una mesh:
 // - Leviga bordo (Smooth Boundary): ammorbidisce il contorno frastagliato di una scansione;
 // - Ponte (Bridge): unisce con una striscia di triangoli due tratti di bordo.
 // Lavorano in mm sulle coordinate originali, con vertici uniti; restituiscono una nuova geometria.
@@ -215,7 +215,7 @@ export function bridgeBoundaries(data, a, b, length) {
 }
 
 /**
- * Raddrizza bordo (come "Tensione Bordo" di RealGuide).
+ * Raddrizza bordo (tensione del bordo).
  * 1. bordo: le onde piu' corte di una scala in mm (forza x 0,25 mm) vengono spianate con un filtro
  *    a compensazione (2*G(x) - G(G(x))): le increspature spariscono, ma il contorno non si
  *    restringe e le curve ampie (es. le estremita' dell'arcata) restano dove sono;

@@ -3,7 +3,7 @@ import * as THREE from 'three'
 // Rilevamento e chiusura dei fori di una mesh triangolare.
 // Un foro è un anello di spigoli di bordo, cioè spigoli usati da una sola faccia.
 // La chiusura segue lo schema di Liepa ("Filling holes in meshes", 2003), usato
-// anche da Meshmixer: triangolazione del contorno, infittimento e levigatura.
+// comunemente: triangolazione del contorno, infittimento e levigatura.
 
 const EDGE_KEY_BASE = 67108864 // 2^26: chiave numerica univoca per una coppia di vertici
 const MAX_MWT_LOOP = 120 // oltre questa soglia la triangolazione ottima O(n^3) è troppo lenta

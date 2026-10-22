@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import { SLICE_TYPE } from '@niivue/niivue'
 
-// Box di "Riduci volume" disegnato sopra la vista 3D di NiiVue, come in RealGuide:
+// Box di "Riduci volume" disegnato sopra la vista 3D di NiiVue:
 // sei maniglie (una per faccia) da trascinare per stringere il box; il volume fuori dal
 // box viene nascosto dal vivo con i piani di taglio di NiiVue.
 // Il box e' in coordinate frazionarie della texture NiiVue (0-1 per asse, ordine RAS).

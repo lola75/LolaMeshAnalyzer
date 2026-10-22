@@ -7,7 +7,8 @@ import MarkerScanTools from './MarkerScanTools'
 // posto dei quali ci sono gli strumenti della guida (Rimozione Sottosquadri, Generazione Guida).
 // initialMeshes: mesh portate dal Modificatore (con le modifiche fatte), altrimenti pagina vuota
 // onOpenModifier(meshes): pulsante "Modifica Mesh" sulla vista, porta le mesh nel Modificatore
-export default function MarkerScanPage({ onClose, initialMeshes = null, onOpenModifier = null }) {
+// onApply(geometry, { name }): Applica modifiche porta il risultato nella pagina principale
+export default function MarkerScanPage({ onClose, onApply = null, initialMeshes = null, onOpenModifier = null }) {
   return (
     <div className="fixed inset-0 z-50">
       <MeshModifier
@@ -33,6 +34,7 @@ export default function MarkerScanPage({ onClose, initialMeshes = null, onOpenMo
           />
         )}
         requireEditConsent={false}
+        onApply={onApply}
         onClose={onClose}
       />
     </div>

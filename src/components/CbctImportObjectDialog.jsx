@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 
-// Tipi di oggetto 3D (stessi nomi e ordine di RealGuide)
+// Tipi di oggetto 3D che si possono importare sulla CBCT
 export const OBJECT_TYPES = [
   'Face Scan',
   'Marker Scan',

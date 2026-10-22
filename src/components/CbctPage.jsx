@@ -635,7 +635,7 @@ export default function CbctPage({ onClose }) {
     }
   }
 
-  // Riduci volume (come RealGuide): box con 6 maniglie sulla vista 3D, il volume fuori dal box
+  // Riduci volume: box con 6 maniglie sulla vista 3D, il volume fuori dal box
   // si nasconde dal vivo con i piani di taglio di NiiVue; "Riduzione permanente" ritaglia sul server.
   const updateBox = (next) => {
     setBox(next)

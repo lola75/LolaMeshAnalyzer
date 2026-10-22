@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import LightingControl from './LightingControl'
-import { setupViewerLighting } from '../utils/viewerLighting'
+import { setupViewerLighting, VIEW_FOV, worldPerPixel, dentalFrontQuaternion } from '../utils/viewerLighting'
 import { analyzeNormals, createNormalVisualization } from '../utils/normalAnalyzer'
 import MeshModifier from './MeshModifier'
 
@@ -196,7 +196,7 @@ export default function MeshViewer({
     // Camera
     const width = containerRef.current.clientWidth
     const height = containerRef.current.clientHeight
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
+    const camera = new THREE.PerspectiveCamera(VIEW_FOV, width / height, 0.1, 10000)
     camera.position.z = 5
     // shared camera distance used by pan/zoom handlers
     let cameraZ = camera.position.z
@@ -435,6 +435,9 @@ export default function MeshViewer({
       pivot.add(secondaryOverlay)
     }
     for (const extraMesh of extraObjects) pivot.add(extraMesh)
+    // la telecamera e' ferma e ruota il modello: orientamento delle scansioni dentali (Z in alto,
+    // incisivi verso chi guarda), come la vista frontale delle altre pagine
+    pivot.quaternion.copy(dentalFrontQuaternion().invert())
     scene.add(pivot)
     pivotRef.current = pivot
 
@@ -504,7 +507,8 @@ export default function MeshViewer({
         console.log('Punto selezionato:', point)
         
         // Crea una piccola sfera rossa come marker
-        const markerSize = Math.max(0.02, 0.03 * cameraZ)
+        // grandezza del marcatore costante sullo schermo (circa 1/50 dell'altezza della vista)
+        const markerSize = Math.max(0.002, 0.039 * cameraZ * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))
         const markerGeometry = new THREE.SphereGeometry(markerSize, 16, 16)
         const markerMaterial = new THREE.MeshBasicMaterial({ 
           color: 0xff0000, 
@@ -599,7 +603,8 @@ export default function MeshViewer({
           pivotRef.current.quaternion.premultiply(rotation).normalize()
         }
       } else {
-        const panSpeed = 0.003 * cameraZ
+        // il modello segue il cursore
+        const panSpeed = worldPerPixel(camera, cameraZ, renderer.domElement.clientHeight)
         if (pivotRef.current) {
           pivotRef.current.position.x += deltaX * panSpeed
           pivotRef.current.position.y -= deltaY * panSpeed
@@ -623,7 +628,8 @@ export default function MeshViewer({
     const onContextMenu = (e) => e.preventDefault()
     const onWheel = (e) => {
       e.preventDefault()
-      cameraZ = Math.max(0.5, cameraZ + e.deltaY * 0.01)
+      // zoom proporzionale alla distanza (lento da vicino, veloce da lontano)
+      cameraZ = Math.max(0.5, cameraZ * Math.pow(1.0015, Math.max(-300, Math.min(300, e.deltaY))))
     }
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)

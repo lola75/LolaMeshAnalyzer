@@ -8,7 +8,7 @@ import useMeshFreeform from './useMeshFreeform'
 import MeshFreeformPanel from './MeshFreeformPanel'
 import ProgressOverlay from './ProgressOverlay'
 
-// Strumenti della pagina "Crea Marker Scan" (guida chirurgica), ricostruiti dal video di RealGuide:
+// Strumenti della pagina "Crea Marker Scan" (guida chirurgica):
 // Passo 1 "Rimozione Sottosquadri" e Passo 2 "Generazione Guida" con le "Opzioni avanzate".
 // Per ora sono pulsanti e cursori con i valori del video: le funzioni si aggiungono una alla volta.
 
@@ -87,7 +87,7 @@ function Switch({ label, checked, onChange, disabled }) {
   )
 }
 
-// Riquadro che si apre sotto il suo pulsante (come in RealGuide)
+// Riquadro che si apre sotto il suo pulsante
 function Expandable({ label, open, onToggle, children }) {
   return (
     <div className={`rounded-xl border ${open ? 'border-sky-300' : 'border-transparent'}`}>
@@ -254,7 +254,7 @@ export default function MarkerScanTools({ meshes = [], setMeshes, canvasHandlers
     onCursorSize: (v) => setG({ cursorSize: v }),
   })
 
-  // Crea guida (server mesh): guscio costruito sulla superficie della regione, come in Meshmixer
+  // Crea guida (server mesh): guscio costruito sulla superficie della regione
   // (levigatura, offset interno di "Offset guida", offset esterno dello spessore occlusale sopra e
   // perimetrale sui lati, bordi uniti da una fascia). Sostituisce la guida creata prima.
   const createGuide = async () => {
@@ -339,7 +339,7 @@ export default function MarkerScanTools({ meshes = [], setMeshes, canvasHandlers
   }
 
   // Leviga guida: lo strumento Free Form del Modificatore sulla guida creata, aperto con il pennello
-  // Leviga (come la lisciatura a pennello di Meshmixer). Tutto a mano: le pennellate restano sulla
+  // Leviga (lisciatura a pennello). Tutto a mano: le pennellate restano sulla
   // copia di lavoro finche' l'utente non preme Applica.
   const smoothing = step === 1 && openPanel === 'smooth' && guideIndex >= 0
   const smoothStateRef = useRef({ active: false, painting: false })

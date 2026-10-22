@@ -18,7 +18,7 @@ import {
   invertSelection,
 } from '../utils/brushOffset'
 import { createMirrorGizmo, mirrorGeometry, mirrorMatrix } from '../utils/mirrorMesh'
-import { mergeGeometries, saveMeshFile } from '../utils/stlExport'
+import { mergeGeometries, saveMeshFile, saveMeshFiles } from '../utils/stlExport'
 import useMeshFreeform from './useMeshFreeform'
 import { transferVertexColors } from '../utils/meshColorTransfer'
 import MeshFreeformPanel from './MeshFreeformPanel'
@@ -26,7 +26,7 @@ import MeshNormalsPanel from './MeshNormalsPanel'
 import MeshColorPicker from './MeshColorPicker'
 import LightingControl from './LightingControl'
 import ViewRotateWidget from './ViewRotateWidget'
-import { setupViewerLighting } from '../utils/viewerLighting'
+import { setupViewerLighting, VIEW_FOV, worldPerPixel, DENTAL_UP, DENTAL_FRONT, dentalFrontQuaternion } from '../utils/viewerLighting'
 import MeshExtraToolsPanel, { EXTRA_TOOLS } from './MeshExtraToolsPanel'
 import { prepareBoundaries, smoothBoundary, newBoundaryLoops, nearestBoundaryVertex, boundarySegment, bridgeBoundaries, straightenBorderPreview, applyStraightenBorder } from '../utils/boundaryTools'
 import {
@@ -239,13 +239,14 @@ const createHoleLabelTexture = (text, color) => {
 // initialMeshes: elenco di mesh con cui aprire (es. quelle portate dal Modificatore in Crea Marker
 // Scan); onOpenMarkerScan(meshes) / onOpenModifier(meshes): pulsanti sulla vista che portano le mesh
 // attuali, con tutte le modifiche fatte e senza salvarle, in Crea Marker Scan o nel Modificatore
-export default function MeshModifier({ geometry, initialMeshes = null, onClose, onApply, onOpenMarkerScan = null, onOpenModifier = null, requireEditConsent, title = 'Modificatore Mesh', hideStandardTools = false, extraSidebar = null, gridOverlay = false }) {
+// onReturn(meshes) + returnLabel: pulsante che riporta le mesh modificate nella pagina da cui si e'
+// arrivati (es. Utilita' di stampa 3D); con onReturn anche Applica modifiche le riporta li'
+export default function MeshModifier({ geometry, initialMeshes = null, onClose, onApply, onOpenMarkerScan = null, onOpenModifier = null, onReturn = null, returnLabel = 'Torna', requireEditConsent, title = 'Modificatore Mesh', hideStandardTools = false, extraSidebar = null, gridOverlay = false }) {
   const containerRef = useRef(null)
   const sceneRef = useRef(null)
   const rendererRef = useRef(null)
   const cameraRef = useRef(null)
   const meshesRef = useRef([])
-  const rotationRef = useRef({ x: 0, y: 0 })
   const isDraggingRef = useRef(false)
   const mouseRef = useRef({ x: 0, y: 0 })
   const mouseButtonRef = useRef(null)
@@ -258,6 +259,9 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
   const selectedMeshHelperRef = useRef(null)
   const [message, setMessage] = useState('')
   const [showGrid, setShowGrid] = useState(gridOverlay)
+  // griglia di riferimento chiesta da uno strumento della colonna esterna (es. 8 linee per
+  // orientare la direzione di estrusione); null = nessuna
+  const [toolGrid, setToolGrid] = useState(null)
   // livello sopra la vista 3D in cui la colonna esterna puo' mettere i suoi pulsanti (portal)
   const [viewportOverlay, setViewportOverlay] = useState(null)
   const [meshes, setMeshes] = useState(() => (initialMeshes?.length ? initialMeshes : geometry ? [{ geometry, name: 'Mesh iniziale', visible: true }] : []))
@@ -338,7 +342,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
   const [showFreeformPanel, setShowFreeformPanel] = useState(false)
   const [freeformIndex, setFreeformIndex] = useState(0)
   const [freeformSettings, setFreeformSettings] = useState({ brush: 'add', radius: 2, strength: 0.5 })
-  // Strumenti in stile Meshmixer: 'smoothBoundary' | 'makeSolid' | 'bridge' (null = chiusi)
+  // Strumenti aggiuntivi: 'smoothBoundary' | 'makeSolid' | 'bridge' (null = chiusi)
   const [extraTool, setExtraTool] = useState(null)
   const [extraParams, setExtraParams] = useState({ iterations: 10, rings: 2, loops: 'longest', voxelSize: 0.2, offset: 0, maxTriangles: 400000, width: 4 })
   const [makeSolidBusy, setMakeSolidBusy] = useState(false)
@@ -406,7 +410,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
   // Modifica Bordo: 'Raddrizza bordo' | 'Ricostruisci bordo' | 'Estendi bordo'
   const [borderTool, setBorderTool] = useState(null)
   const [borderOnlyOuter, setBorderOnlyOuter] = useState(true)
-  // Raddrizza bordo (come "Tensione Bordo" di RealGuide): bordi scelti, forza e distanza di lisciatura
+  // Raddrizza bordo (tensione del bordo): bordi scelti, forza e distanza di lisciatura
   const [straightenLoops, setStraightenLoops] = useState(null)
   const [straightenStrength, setStraightenStrength] = useState(10)
   const [straightenDistance, setStraightenDistance] = useState(1)
@@ -526,73 +530,10 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     }
   }, [meshes, selectedServer.url])
 
-  const bakeMeshGeometry = (mesh) => {
-    const cloned = mesh.geometry.clone()
-    mesh.updateMatrixWorld(true)
-    cloned.applyMatrix4(mesh.matrixWorld)
-    cloned.computeVertexNormals()
-    return cloned
-  }
-
   const handleServerSelection = (event) => {
     const nextServerId = event.target.value
     setSelectedServerId(nextServerId)
     saveServerId(nextServerId)
-  }
-
-  const serializeGeometryToSTL = (geometry, name = 'mesh') => {
-    const positionAttr = geometry.getAttribute('position')
-    if (!positionAttr) return ''
-
-    const normalAttr = geometry.getAttribute('normal')
-    const positions = positionAttr.array
-    const normals = normalAttr ? normalAttr.array : null
-    const indices = geometry.index ? geometry.index.array : null
-    const faceCount = indices ? indices.length / 3 : positions.length / 9
-
-    const getVertex = (target, srcArray, index) => {
-      const offset = index * 3
-      target.set(srcArray[offset], srcArray[offset + 1], srcArray[offset + 2])
-      return target
-    }
-
-    let stl = `solid ${name}
-`
-    const v0 = new THREE.Vector3()
-    const v1 = new THREE.Vector3()
-    const v2 = new THREE.Vector3()
-    const normal = new THREE.Vector3()
-
-    for (let i = 0; i < faceCount; i += 1) {
-      const a = indices ? indices[i * 3] : i * 3
-      const b = indices ? indices[i * 3 + 1] : i * 3 + 1
-      const c = indices ? indices[i * 3 + 2] : i * 3 + 2
-
-      getVertex(v0, positions, a)
-      getVertex(v1, positions, b)
-      getVertex(v2, positions, c)
-
-      if (normals) {
-        getVertex(normal, normals, a)
-      } else {
-        normal.crossVectors(
-          new THREE.Vector3().subVectors(v1, v0),
-          new THREE.Vector3().subVectors(v2, v0)
-        ).normalize()
-      }
-
-      stl += ` facet normal ${normal.x} ${normal.y} ${normal.z}\n`
-      stl += '  outer loop\n'
-      stl += `   vertex ${v0.x} ${v0.y} ${v0.z}\n`
-      stl += `   vertex ${v1.x} ${v1.y} ${v1.z}\n`
-      stl += `   vertex ${v2.x} ${v2.y} ${v2.z}\n`
-      stl += '  endloop\n'
-      stl += ' endfacet\n'
-    }
-
-    stl += `endsolid ${name}
-`
-    return stl
   }
 
 
@@ -611,7 +552,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     // Camera
     const width = containerRef.current.clientWidth
     const height = containerRef.current.clientHeight
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
+    const camera = new THREE.PerspectiveCamera(VIEW_FOV, width / height, 0.1, 1000)
     camera.position.z = 3
     cameraRef.current = camera
 
@@ -643,6 +584,16 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
 
     // Create meshes
     meshesRef.current = []
+    // riferimento comune della vista (centro e scala della prima mesh): le mesh senza un proprio
+    // riferimento lo usano, cosi' tra loro restano nelle posizioni e grandezze reali
+    let commonFrame = meshes[0]?.displayFrame || null
+    if (!commonFrame && meshes[0]?.geometry) {
+      meshes[0].geometry.computeBoundingBox()
+      const firstBox = meshes[0].geometry.boundingBox
+      const firstSize = firstBox.getSize(new THREE.Vector3())
+      const firstMax = Math.max(firstSize.x, firstSize.y, firstSize.z)
+      commonFrame = { center: firstBox.getCenter(new THREE.Vector3()).toArray(), scale: firstMax > 0 ? 1.5 / firstMax : 1 }
+    }
     meshes.forEach((meshData, index) => {
       const clonedGeometry = meshData.geometry.clone()
       // colori propri della mesh, se ne ha e l'utente non ha scelto un colore
@@ -680,7 +631,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       // Center and fit mesh
       // una parte ricavata da un'altra mesh (displayFrame) usa il riferimento di quella,
       // così nella vista resta nella sua posizione e alla sua grandezza
-      const frame = meshData.displayFrame
+      const frame = meshData.displayFrame || (index > 0 ? commonFrame : null)
       clonedGeometry.computeBoundingBox()
       const boundingBox = clonedGeometry.boundingBox
       const center = new THREE.Vector3()
@@ -710,7 +661,9 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     const lighting = setupViewerLighting(scene, camera, renderer)
 
     // Position camera to frame all meshes
-    camera.position.z = cameraZ
+    // vista frontale delle scansioni dentali: Z in alto, incisivi verso la telecamera
+    camera.position.set(...DENTAL_FRONT).multiplyScalar(cameraZ)
+    camera.up.set(...DENTAL_UP)
     camera.lookAt(0, 0, 0)
 
     // Se la scena viene ricostruita con le stesse mesh (es. dopo la chiusura di un foro),
@@ -728,6 +681,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     ) {
       camera.position.copy(savedView.cameraPosition)
       camera.quaternion.copy(savedView.cameraQuaternion)
+      camera.up.set(0, 1, 0).applyQuaternion(camera.quaternion) // "alto" coerente con la vista ripresa
       meshesRef.current.forEach((m, i) => {
         const saved = savedView.meshes[i < savedCount ? i : meshes[i].displayFrame.sourceIndex]
         m.position.copy(saved.position)
@@ -796,26 +750,24 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
           const sph = cameraSphericalRef.current
           sph.setFromVector3(cameraRef.current.position.clone())
         } else {
-          // clic su una mesh: la seleziona; col tasto sinistro la vista ruota come trascinando sullo
-          // sfondo (stessa rotazione libera), col centrale si prepara lo spostamento
+          // clic su una mesh: la seleziona; col tasto sinistro o destro la vista ruota come
+          // trascinando sullo sfondo (stessa rotazione libera), col centrale si trasla
           const clicked = intersects.length > 0 ? intersects[0].object : null
           if (clicked) {
             const idx = meshesRef.current.indexOf(clicked)
             if (idx !== -1) setSelectedMeshIndex(idx)
           }
-          cameraControlRef.current = e.button === 0
+          cameraControlRef.current = e.button !== 1
         }
       } catch (err) {
         cameraControlRef.current = false
       }
-      if (cameraControlRef.current) {
-        // la vista ruota attorno al centro di cio' che si vede (es. la guida da sola), non al
-        // centro della scena
-        const box = new THREE.Box3()
-        meshesRef.current.forEach((m) => { if (m.visible) box.expandByObject(m) })
-        if (box.isEmpty()) orbitPivotRef.current.set(0, 0, 0)
-        else box.getCenter(orbitPivotRef.current)
-      }
+      // la vista ruota (e trasla) attorno al centro di cio' che si vede (es. la guida da sola), non
+      // al centro della scena
+      const box = new THREE.Box3()
+      meshesRef.current.forEach((m) => { if (m.visible) box.expandByObject(m) })
+      if (box.isEmpty()) orbitPivotRef.current.set(0, 0, 0)
+      else box.getCenter(orbitPivotRef.current)
     }
 
     const onMouseMove = (e) => {
@@ -839,14 +791,18 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       mouseRef.current.x = e.clientX
       mouseRef.current.y = e.clientY
 
-      // Middle-button pan in main viewport (highest priority, pan all meshes)
+      // Tasto centrale: traslazione della vista sul piano dello schermo; il modello segue il cursore
       if (!manualMoveMode && mouseButtonRef.current === 1) {
         const camera = cameraRef.current
-        const panSpeed = 0.003 * camera.position.z
-        meshesRef.current.forEach((m) => {
-          m.position.x += deltaX * panSpeed
-          m.position.y -= deltaY * panSpeed
-        })
+        const forward = new THREE.Vector3()
+        camera.getWorldDirection(forward)
+        const depth = Math.max(0.05, orbitPivotRef.current.clone().sub(camera.position).dot(forward))
+        const step = worldPerPixel(camera, depth, renderer.domElement.clientHeight)
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion)
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)
+        const shift = right.multiplyScalar(-deltaX * step).addScaledVector(up, deltaY * step)
+        camera.position.add(shift)
+        orbitPivotRef.current.add(shift)
         return
       }
 
@@ -872,7 +828,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       if (manualMoveMode && mouseButtonRef.current === 1 && meshesRef.current[selectedMeshIndex]) {
         const mesh = meshesRef.current[selectedMeshIndex]
         const camera = cameraRef.current
-        const distanceFactor = Math.max(0.00012, camera.position.distanceTo(new THREE.Vector3(0, 0, 0)) * 0.00028)
+        const distanceFactor = worldPerPixel(camera, Math.max(0.05, camera.position.distanceTo(mesh.position)), renderer.domElement.clientHeight) // la mesh segue il cursore
         const cameraDirection = new THREE.Vector3()
         camera.getWorldDirection(cameraDirection)
         const cameraRight = new THREE.Vector3().crossVectors(cameraDirection, camera.up).normalize()
@@ -890,14 +846,9 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
         const mesh = meshesRef.current[selectedMeshIndex]
         const camera = cameraRef.current
 
-        if (mouseButtonRef.current === 1) {
-          const moveSpeed = 0.004
-          mesh.position.x += deltaX * moveSpeed
-          mesh.position.y -= deltaY * moveSpeed
-          return
-        }
 
-        const distanceFactor = Math.max(0.00012, camera.position.distanceTo(new THREE.Vector3(0, 0, 0)) * 0.00028)
+
+        const distanceFactor = worldPerPixel(camera, Math.max(0.05, camera.position.distanceTo(mesh.position)), renderer.domElement.clientHeight) // la mesh segue il cursore
 
         const cameraDirection = new THREE.Vector3()
         camera.getWorldDirection(cameraDirection)
@@ -910,31 +861,6 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
 
         mesh.position.add(moveVector)
         return
-      }
-
-      // Use axis-based rotations to avoid Euler clamping (allow continuous rotation)
-      if (mouseButtonRef.current === 0) {
-        const camera = cameraRef.current
-        const rotationSpeed = 0.01
-        const worldUp = new THREE.Vector3(0, 1, 0)
-        const cameraDirection = new THREE.Vector3()
-        if (camera) camera.getWorldDirection(cameraDirection)
-        const cameraRight = new THREE.Vector3().crossVectors(cameraDirection, camera?.up || new THREE.Vector3(0, 1, 0)).normalize()
-
-        meshesRef.current.forEach((m) => {
-          m.rotateOnWorldAxis(worldUp, -deltaX * rotationSpeed)
-          m.rotateOnAxis(cameraRight, deltaY * rotationSpeed)
-        })
-
-        // keep rotationRef in sync with the first mesh
-        const first = meshesRef.current[0]
-        if (first) {
-          rotationRef.current.y = first.rotation.y
-          rotationRef.current.x = first.rotation.x
-        }
-      } else {
-        rotationRef.current.y -= deltaX * 0.01
-        rotationRef.current.x += deltaY * 0.01
       }
     }
 
@@ -970,23 +896,29 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       e.preventDefault()
       // Ctrl + rotella con un pennello attivo: diametro invece dello zoom
       if (e.ctrlKey && (externalHandlersRef.current?.wheel?.(e.deltaY) || brushWheelRef.current?.(e.deltaY))) return
-      // Always zoom the camera along its forward vector
+      // Zoom verso il punto sotto il cursore, a passi proporzionali alla distanza (lento da vicino,
+      // veloce da lontano); rotella in avanti avvicina
       const camera = cameraRef.current
       if (!camera) return
-      const direction = new THREE.Vector3()
-      camera.getWorldDirection(direction)
-      // deltaY positive -> zoom out; negative -> zoom in
-      const zoomFactor = 0.0012
-      camera.position.addScaledVector(direction, e.deltaY * zoomFactor)
-      // keep camera at a reasonable distance from origin
-      const minDist = 0.3
-      const maxDist = 50
-      const dist = camera.position.length()
-      if (dist < minDist) {
-        camera.position.setLength(minDist)
-      } else if (dist > maxDist) {
-        camera.position.setLength(maxDist)
-      }
+      const rect = renderer.domElement.getBoundingClientRect()
+      const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
+      const ray = new THREE.Raycaster()
+      ray.setFromCamera(ndc, camera)
+      const box = new THREE.Box3()
+      meshesRef.current.forEach((m) => { if (m.visible) box.expandByObject(m) })
+      const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
+      // distanza lungo il raggio del cursore fino al piano del centro del modello (niente ricerca sui
+      // triangoli: con scansioni grandi rallenterebbe ogni scatto della rotella)
+      const forward = new THREE.Vector3()
+      camera.getWorldDirection(forward)
+      const depth = Math.max(0.05, center.clone().sub(camera.position).dot(forward))
+      const distance = depth / Math.max(0.2, ray.ray.direction.dot(forward))
+      const factor = Math.pow(1.0015, -Math.max(-300, Math.min(300, e.deltaY))) // >1 avvicina
+      let next = distance / factor
+      const minDistance = 0.02
+      const maxDistance = 200
+      next = Math.min(maxDistance, Math.max(minDistance, next))
+      camera.position.addScaledVector(ray.ray.direction, distance - next)
       // sync spherical state used by orbit
       try {
         cameraSphericalRef.current.setFromVector3(camera.position.clone())
@@ -1029,10 +961,6 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     const animate = () => {
       animationId = requestAnimationFrame(animate)
 
-      meshesRef.current.forEach(mesh => {
-        mesh.rotation.x += (rotationRef.current.x - mesh.rotation.x) * 0.1
-        mesh.rotation.y += (rotationRef.current.y - mesh.rotation.y) * 0.1
-      })
 
       if (selectedMeshHelperRef.current) {
         selectedMeshHelperRef.current.update()
@@ -1490,7 +1418,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     }
   }, [showNormalsPanel, selectedMeshIndex, meshes])
 
-  // Strumenti Meshmixer: si chiudono quando si apre un altro strumento
+  // Strumenti aggiuntivi: si chiudono quando si apre un altro strumento
   useEffect(() => {
     if (!extraTool) return
     if (repairMode || showSimplifyPanel || showIsolatedPanel || showOffsetPanel || showMirrorPanel || cutTool || borderTool || manualMoveMode || alignmentMode !== 'none' || showFreeformPanel || showNormalsPanel) {
@@ -1787,7 +1715,10 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
           toneMapped: false,
         })
       )
-      label.scale.set(0.055, 0.055, 1)
+      // three.js ridimensiona questi sprite con il campo visivo: grandezza riportata a quella pensata
+      // per 75 gradi, cosi' resta la stessa sullo schermo anche con il campo visivo stretto
+      const fovScale = Math.tan(THREE.MathUtils.degToRad(cameraRef.current?.fov ?? 75) / 2) / Math.tan(THREE.MathUtils.degToRad(75) / 2)
+      label.scale.set(0.055 * fovScale, 0.055 * fovScale, 1)
       label.position.copy(toScene(...hole.centroid))
       label.renderOrder = 11
       label.userData.holeId = hole.id
@@ -2035,7 +1966,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     const pivot = visibleCenter()
     const distance = camera.position.distanceTo(pivot)
     const from = camera.quaternion.clone()
-    const to = new THREE.Quaternion()
+    const to = dentalFrontQuaternion()
     animateView((e) => {
       camera.quaternion.slerpQuaternions(from, to, e)
       camera.position.copy(pivot).add(new THREE.Vector3(0, 0, distance).applyQuaternion(camera.quaternion))
@@ -2364,7 +2295,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     setShowFreeformPanel(true)
   }
 
-  // --- Strumenti in stile Meshmixer: Leviga bordo, Crea solido, Ponte ---
+  // --- Strumenti aggiuntivi: Leviga bordo, Crea solido, Ponte ---
   const toggleExtraTool = (tool) => {
     if (extraTool === tool) {
       setExtraTool(null)
@@ -2665,13 +2596,26 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
   const openApplyDialog = () => {
     if (meshes.length === 0) return
     const baseName = (meshes[selectedMeshIndex]?.name || 'mesh').replace(/\.(stl|obj|ply)$/i, '').replace(/\s+/g, '_')
-    setApplyFileName(`${baseName}_modificata`)
-    setApplyTarget('selected')
+    setApplyFileName(articulatedModels().length > 1 ? 'modello_articolato' : `${baseName}_modificata`)
+    setApplyTarget(articulatedModels().length > 1 ? 'articulated' : 'selected')
     setShowApplyDialog(true)
   }
 
+  // modelli articolati con supporto (Utilita' di stampa 3D): superiore e inferiore, in due file
+  const articulatedModels = () => meshes
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => m.articulated && m.visible !== false)
+    .sort((a, b) => (a.m.articulated === 'up' ? 0 : 1) - (b.m.articulated === 'up' ? 0 : 1))
+  const articulatedFileName = (m, list) => {
+    const count = list.filter((x) => x.m.articulated === m.articulated).length
+    const suffix = m.articulated === 'up' ? 'superiore' : 'inferiore'
+    const n = list.filter((x) => x.m.articulated === m.articulated).indexOf(list.find((x) => x.m === m)) + 1
+    return `${applyFileName.trim() || 'modello'}_${suffix}${count > 1 ? `_${n}` : ''}`
+  }
+
   const applyGeometryAvailable =
-    applyTarget === 'merged' ? meshes.some((m) => m.visible) : !!meshes[selectedMeshIndex]
+    applyTarget === 'articulated' ? articulatedModels().length > 0
+      : applyTarget === 'merged' ? meshes.some((m) => m.visible) : !!meshes[selectedMeshIndex]
 
   // Modifiche visibili nella vista ma non ancora confermate con il tasto dello strumento
   const pendingOffset =
@@ -2709,6 +2653,19 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     if (!applyGeometryAvailable || applyBusy) return
     setApplyBusy(true)
     try {
+      if (applyTarget === 'articulated') {
+        const list = articulatedModels()
+        const files = list.map(({ m, i }) => ({ geometry: finalGeometryOf(i), name: articulatedFileName(m, list) }))
+        if (save) {
+          const saved = await saveMeshFiles(files, applyFormat, 'Scegli la cartella dove salvare i modelli articolati')
+          if (!saved) return // salvataggio annullato dall'utente
+        }
+        setShowApplyDialog(false)
+        if (onReturn) sendMeshesTo(onReturn)
+        else if (onApply) files.forEach(({ geometry, name }) => onApply(geometry, { name }))
+        else onClose?.()
+        return
+      }
       const geometry =
         applyTarget === 'merged' && meshes.length > 1
           ? mergeGeometries(meshes.map((m, i) => (m.visible ? finalGeometryOf(i) : null)).filter(Boolean))
@@ -2718,7 +2675,8 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
         if (!saved) return // salvataggio annullato dall'utente
       }
       setShowApplyDialog(false)
-      if (onApply) onApply(geometry)
+      if (onReturn) sendMeshesTo(onReturn) // tutte le mesh, modificate, tornano alla pagina di provenienza
+      else if (onApply) onApply(geometry, { name: applyFileName })
       else onClose?.()
     } catch (err) {
       console.error('Salvataggio mesh non riuscito:', err)
@@ -3834,12 +3792,18 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
         throw new Error('Geometria non valida')
       }
 
+      // con altre mesh gia' caricate la nuova entra nel riferimento della prima (stesso centro e scala):
+      // resta nella sua posizione originale rispetto alle altre, invece di essere centrata da sola
+      const firstFrame = meshesRef.current[0]?.userData.normalization
       const newMeshes = [
         ...meshes,
         {
           geometry,
           name: file.name.split('.')[0],
-          visible: true
+          visible: true,
+          ...(meshes.length > 0 && firstFrame
+            ? { displayFrame: { center: firstFrame.center.toArray(), scale: firstFrame.scale, sourceIndex: 0 } }
+            : {}),
         }
       ]
       setMeshes(newMeshes)
@@ -3909,13 +3873,32 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     setShowManualMoveConsent(false)
   }
 
-  const serializeMeshBlob = (meshIndex) => {
-    const mesh = meshesRef.current[meshIndex]
-    if (!mesh) {
-      throw new Error('Mesh non trovata nella scena.')
+  // Mesh per gli allineamenti, in millimetri reali:
+  // - la mesh com'e' (coordinate originali) se posedIn e' null;
+  // - con posedIn = indice della mesh fissa: la mesh nella posizione in cui e' nella vista (spostamenti
+  //   manuali compresi), espressa nei millimetri della mesh fissa
+  const alignmentBlob = (meshIndex, posedIn = null) => {
+    const data = meshes[meshIndex]
+    if (!data) throw new Error('Mesh non trovata.')
+    let geometry = data.geometry
+    if (posedIn != null) {
+      const moving = meshesRef.current[meshIndex]
+      const fixed = meshesRef.current[posedIn]
+      const frame = fixed?.userData.normalization
+      if (!moving || !fixed || !frame) throw new Error('Mesh non trovata nella scena.')
+      moving.updateMatrixWorld(true)
+      fixed.updateMatrixWorld(true)
+      geometry = moving.geometry.clone()
+      geometry.applyMatrix4(new THREE.Matrix4().copy(fixed.matrixWorld).invert().multiply(moving.matrixWorld))
+      geometry.scale(1 / frame.scale, 1 / frame.scale, 1 / frame.scale)
+      geometry.translate(frame.center.x, frame.center.y, frame.center.z)
     }
-    const baked = bakeMeshGeometry(mesh)
-    return new Blob([serializeGeometryToSTL(baked, meshes[meshIndex]?.name || 'mesh')], { type: 'application/vnd.ms-pki.stl' })
+    return new Blob([geometryToBinarySTL(geometry)], { type: 'application/octet-stream' })
+  }
+  // la mesh allineata (mm della mesh fissa) si vede sopra la mesh fissa, alla sua grandezza reale
+  const alignedFrame = (targetIndex) => {
+    const frame = meshesRef.current[targetIndex]?.userData.normalization
+    return frame ? { displayFrame: { center: frame.center.toArray(), scale: frame.scale, sourceIndex: targetIndex } } : {}
   }
 
   const clearAlignmentMarkers = () => {
@@ -4021,7 +4004,11 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       mm.add(lm)
       mm.userData.labelSprite = lm
       mm.userData.index = idx
-      newPairs.push({ fixed: fm.position.clone().toArray(), moving: mm.position.clone().toArray(), index: idx })
+      newPairs.push({
+        fixed: alignmentPointToMm('fixed', { localPoint: fm.position }),
+        moving: alignmentPointToMm('moving', { localPoint: mm.position }),
+        index: idx,
+      })
     }
     setPointPairs(newPairs)
   }
@@ -4319,6 +4306,17 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     setTimeout(() => setAlignmentMessage(''), 3000)
   }
 
+  // punto delle viste dell'allineamento -> mm della mesh (worldPoint: coordinate della vista;
+  // localPoint: gia' nelle coordinate della mesh della vista)
+  const alignmentPointToMm = (side, { worldPoint = null, localPoint = null }) => {
+    const mesh = side === 'fixed' ? fixedMeshRef.current : movingMeshRef.current
+    const normalization = mesh?.userData.normalization
+    const local = localPoint ? localPoint.clone() : worldPoint.clone()
+    if (!mesh || !normalization) return local.toArray()
+    if (!localPoint) mesh.worldToLocal(local)
+    return local.divideScalar(normalization.scale).add(normalization.center).toArray()
+  }
+
   const addPointPair = (fixedPoint, movingPoint) => {
     // prefer pending fixed index if set
     let nextIndex = pendingPairRef.current && pendingPairRef.current.fixedIndex ? pendingPairRef.current.fixedIndex : getNextAvailableIndex()
@@ -4326,7 +4324,11 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       setAlignmentMessage('❌ Numero massimo di punti raggiunto (7).')
       return
     }
-    setPointPairs((prev) => [...prev, { fixed: fixedPoint.toArray(), moving: movingPoint.toArray(), index: nextIndex }])
+    setPointPairs((prev) => [...prev, {
+      fixed: alignmentPointToMm('fixed', { worldPoint: fixedPoint }),
+      moving: alignmentPointToMm('moving', { worldPoint: movingPoint }),
+      index: nextIndex,
+    }])
     // Add markers for completed pair. Reuse pending fixed marker if present
     if (pendingFixedMarkerRef.current && pendingFixedMarkerRef.current.userData && pendingFixedMarkerRef.current.userData.index === nextIndex) {
       alignmentMarkersRef.current.fixed.push(pendingFixedMarkerRef.current)
@@ -4377,8 +4379,8 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     try {
       const sourceMesh = meshes[alignSourceIndex]
       const targetMesh = meshes[alignTargetIndex]
-      const sourceBlob = serializeMeshBlob(alignSourceIndex)
-      const targetBlob = serializeMeshBlob(alignTargetIndex)
+      const sourceBlob = alignmentBlob(alignSourceIndex)
+      const targetBlob = alignmentBlob(alignTargetIndex)
       const formData = new FormData()
       formData.append('source', sourceBlob, `${sourceMesh.name}.stl`)
       formData.append('target', targetBlob, `${targetMesh.name}.stl`)
@@ -4420,6 +4422,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
             geometry: alignedGeometry,
             name: alignedName,
             visible: true,
+            ...alignedFrame(alignTargetIndex),
           },
         ]
         setSelectedMeshIndex(nextMeshes.length - 1)
@@ -4455,8 +4458,8 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     try {
       const sourceMesh = meshes[alignSourceIndex]
       const targetMesh = meshes[alignTargetIndex]
-      const sourceBlob = serializeMeshBlob(alignSourceIndex)
-      const targetBlob = serializeMeshBlob(alignTargetIndex)
+      const sourceBlob = alignmentBlob(alignSourceIndex, alignTargetIndex)
+      const targetBlob = alignmentBlob(alignTargetIndex)
       const formData = new FormData()
       formData.append('source', sourceBlob, `${sourceMesh.name}.stl`)
       formData.append('target', targetBlob, `${targetMesh.name}.stl`)
@@ -4495,6 +4498,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
             geometry: alignedGeometry,
             name: alignedName,
             visible: true,
+            ...alignedFrame(alignTargetIndex),
           },
         ]
         setSelectedMeshIndex(nextMeshes.length - 1)
@@ -4528,11 +4532,14 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
     try {
       const sourceMesh = meshes[alignSourceIndex]
       const targetMesh = meshes[alignTargetIndex]
-      const sourceBlob = serializeMeshBlob(alignSourceIndex)
-      const targetBlob = serializeMeshBlob(alignTargetIndex)
+      const sourceBlob = alignmentBlob(alignSourceIndex, alignTargetIndex)
+      const targetBlob = alignmentBlob(alignTargetIndex)
       const formData = new FormData()
       formData.append('source', sourceBlob, `${sourceMesh.name}.stl`)
       formData.append('target', targetBlob, `${targetMesh.name}.stl`)
+      // distanza massima del server (0,02 era pensata per la vista, alta 1,5): stessa tolleranza in mm
+      const targetFrame = meshesRef.current[alignTargetIndex]?.userData.normalization
+      if (targetFrame) formData.append('max_distance', String(0.02 / targetFrame.scale))
 
       console.log('[ICP Align] Invio richiesta:', {
         source: sourceMesh.name,
@@ -4568,6 +4575,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
             geometry: alignedGeometry,
             name: alignedName,
             visible: true,
+            ...alignedFrame(alignTargetIndex),
           },
         ]
         setSelectedMeshIndex(nextMeshes.length - 1)
@@ -4646,7 +4654,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       backLight.position.set(-5, 5, -5)
       scene.add(backLight)
 
-      const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 1000)
+      const camera = new THREE.PerspectiveCamera(VIEW_FOV, width / height, 0.1, 1000)
       camera.position.set(0, 0, 3)
       camera.lookAt(0, 0, 0)
       cameraRef.current = camera
@@ -4705,6 +4713,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       mesh.rotation.set(0, 0, 0)
       scene.add(mesh)
       mesh.userData.meshIndex = meshIndex
+      mesh.userData.normalization = { center: center.clone(), scale } // vista -> mm della mesh
       meshRef.current = mesh
 
       // Always center the scene around the mesh and reset camera controls for a symmetric view
@@ -4775,7 +4784,8 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
 
       if (middlePressed && fixedMeshRef.current) {
         const camera = fixedCameraRef.current
-        const panSpeed = 0.003 * camera.position.z
+        // il modello segue il cursore
+        const panSpeed = worldPerPixel(camera, camera.position.z, fixedRendererRef.current?.domElement.clientHeight || 500)
         fixedMeshRef.current.position.x += dx * panSpeed
         fixedMeshRef.current.position.y -= dy * panSpeed
         return
@@ -4880,7 +4890,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
       if (middlePressed && movingMeshRef.current) {
         // pan the moving mesh in camera plane (X/Y)
         const camera = movingCameraRef.current
-        const panSpeed = 0.003 * camera.position.z
+        const panSpeed = worldPerPixel(camera, camera.position.z, movingRendererRef.current?.domElement.clientHeight || 500)
         movingMeshRef.current.position.x += dx * panSpeed
         movingMeshRef.current.position.y -= dy * panSpeed
         return
@@ -5015,6 +5025,19 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
         <div className="absolute inset-0 rounded-[32px] bg-white border border-slate-200 shadow-2xl overflow-hidden">
           <div ref={containerRef} className="render-bg w-full h-full" />
           <div className="absolute right-6 top-20 z-10 flex items-start gap-2">
+            {onReturn && meshes.length > 0 && (
+              <button
+                type="button"
+                onClick={() => sendMeshesTo(onReturn)}
+                title={`${returnLabel}: le mesh tornano con tutte le modifiche fatte`}
+                className="flex h-8 items-center gap-1.5 rounded-lg border border-emerald-700 bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M19 12H5M11 6l-6 6 6 6" />
+                </svg>
+                {returnLabel}
+              </button>
+            )}
             {onOpenModifier && meshes.length > 0 && (
               <button
                 type="button"
@@ -5044,7 +5067,18 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
             <LightingControl />
           </div>
           <ViewRotateWidget cameraRef={cameraRef} onRotate={rotateView} onHome={frontView} className="!absolute bottom-6 left-6 z-10" />
-          {showGrid && (
+          {toolGrid && (
+            // griglia dello strumento: linee piu' marcate, solo visiva (i clic passano alla vista)
+            <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+              {Array.from({ length: toolGrid }, (_, k) => k + 1).map((i) => (
+                <React.Fragment key={i}>
+                  <line x1={`${(i * 100) / (toolGrid + 1)}%`} y1="0" x2={`${(i * 100) / (toolGrid + 1)}%`} y2="100%" stroke="#ffffff" strokeOpacity="0.32" strokeWidth="1" />
+                  <line x1="0" y1={`${(i * 100) / (toolGrid + 1)}%`} x2="100%" y2={`${(i * 100) / (toolGrid + 1)}%`} stroke="#ffffff" strokeOpacity="0.32" strokeWidth="1" />
+                </React.Fragment>
+              ))}
+            </svg>
+          )}
+          {showGrid && !toolGrid && (
             // griglia leggera 6 x 6 linee, solo visiva (i clic passano alla vista)
             <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
               {[1, 2, 3, 4, 5, 6].map((i) => (
@@ -6379,8 +6413,8 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
 
         {/* Suggerimenti interazione - in basso a destra */}
         <div className="absolute bottom-8 right-8 bg-slate-900/80 backdrop-blur-sm text-white text-xs px-3 py-2 rounded-lg space-y-1 shadow-lg pointer-events-none">
-          <p>🖱️ Trascina per ruotare</p>
-          <p>🔍 Rotella per zoom</p>
+          <p>🖱️ Sinistro o destro: ruota · rotella premuta: sposta</p>
+          <p>🔍 Rotella: zoom verso il cursore</p>
         </div>
 
         {alignmentMode === 'point-align' && (
@@ -6756,7 +6790,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
           <h4 className="mb-2 text-[15px] font-semibold text-slate-900">Modifica Bordo</h4>
           <div className="space-y-2.5">
             {['Raddrizza bordo', 'Ricostruisci bordo', 'Estendi bordo', 'Leviga bordo'].map((label) => {
-              // Leviga bordo e' uno strumento a parte (pannello in stile Meshmixer), gli altri usano borderTool
+              // Leviga bordo e' uno strumento a parte (pannello degli strumenti aggiuntivi), gli altri usano borderTool
               const smooth = label === 'Leviga bordo'
               const pressed = smooth ? extraTool === 'smoothBoundary' : borderTool === label
               return (
@@ -6784,7 +6818,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
         </>
         )}
         {typeof extraSidebar === 'function'
-          ? extraSidebar({ meshes, setMeshes, canvasHandlersRef: externalHandlersRef, viewportOverlay, callMeshServer, rendererRef, selectedMeshIndex, setSelectedMeshIndex, meshesRef, sceneRef, cameraRef, showMessage: showTimedMessage })
+          ? extraSidebar({ meshes, setMeshes, canvasHandlersRef: externalHandlersRef, viewportOverlay, callMeshServer, rendererRef, setToolGrid, selectedMeshIndex, setSelectedMeshIndex, meshesRef, sceneRef, cameraRef, showMessage: showTimedMessage })
           : extraSidebar}
 
         <div className="mt-6 flex items-center gap-3">
@@ -6845,6 +6879,7 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
                 <div className="space-y-1.5">
                   <div className="font-medium text-slate-700">Mesh da applicare</div>
                   {[
+                    ...(articulatedModels().length > 0 ? [['articulated', `Salva i modelli articolati con supporto (${articulatedModels().length} file: superiore e inferiore)`]] : []),
                     ['selected', `Mesh selezionata (${meshes[selectedMeshIndex]?.name || 'mesh'})`],
                     ['merged', 'Tutte le mesh visibili, unite in una sola'],
                   ].map(([value, text]) => (
@@ -6869,6 +6904,11 @@ export default function MeshModifier({ geometry, initialMeshes = null, onClose, 
                   />
                   <span className="text-slate-500">.stl</span>
                 </div>
+                {applyTarget === 'articulated' && (
+                  <div className="text-xs text-slate-500">
+                    File: {articulatedModels().map(({ m }, _, list) => `${articulatedFileName(m, list)}.stl`).join(' e ')}. Con "Salva e applica" si sceglie la cartella.
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">

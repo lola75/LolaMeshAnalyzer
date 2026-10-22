@@ -84,3 +84,32 @@ export async function saveMeshFile(geometry, fileName, format) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   return fullName
 }
+
+// Piu' mesh in file separati (es. modelli articolati superiore e inferiore): in Electron si sceglie la
+// cartella di destinazione, nel browser ogni file viene scaricato. files: [{ geometry, name }].
+// Restituisce la cartella (o i nomi) oppure null se annullato.
+export async function saveMeshFiles(files, format, title = 'Scegli la cartella dove salvare i modelli') {
+  const items = files.map(({ geometry, name }) => {
+    const baseName = (name || 'mesh').trim().replace(/\.stl$/i, '') || 'mesh'
+    return {
+      name: `${baseName}.stl`,
+      data: format === 'ascii' ? geometryToAsciiSTL(geometry, baseName) : new Uint8Array(geometryToBinarySTL(geometry)),
+    }
+  })
+  const saveFiles = window.electron?.saveMeshFiles
+  if (typeof saveFiles === 'function') {
+    const result = await saveFiles({ title, files: items })
+    if (result?.error) throw new Error(result.error)
+    return result?.success ? result.folder : null
+  }
+  for (const { name, data } of items) {
+    const blob = new Blob([data], { type: format === 'ascii' ? 'text/plain' : 'model/stl' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = name
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  return items.map((item) => item.name).join(', ')
+}

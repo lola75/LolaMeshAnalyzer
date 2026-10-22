@@ -16,6 +16,7 @@ import SplashScreen from './components/SplashScreen'
 import ChatWindow from './components/ChatWindow'
 import ScoreBar from './components/ScoreBar'
 import MeshModifier from './components/MeshModifier'
+import Print3DPage from './components/Print3DPage'
 import { extractMetadata } from './utils/metadataExtractor'
 import MeshColorPicker, { hexFromNumber, numberFromHex } from './components/MeshColorPicker'
 import { ChatProvider } from './contexts/ChatContext'
@@ -61,7 +62,11 @@ function AppContent() {
   const [showMarkerScan, setShowMarkerScan] = useState(false)
   const [markerScanMeshes, setMarkerScanMeshes] = useState(null) // mesh portate dal Modificatore
   const [markerScanKey, setMarkerScanKey] = useState(0) // nuova pagina quando arrivano mesh nuove
-  const [modifierMeshes, setModifierMeshes] = useState(null) // Modificatore aperto da Crea Marker Scan
+  // Modificatore aperto da un'altra pagina: { meshes, origin: 'markerScan' | 'print3d' }
+  const [modifierSession, setModifierSession] = useState(null)
+  const [showPrint3D, setShowPrint3D] = useState(false) // Utilità di stampa 3D
+  const [print3DMeshes, setPrint3DMeshes] = useState(null) // mesh tornate dal Modificatore
+  const [print3DKey, setPrint3DKey] = useState(0) // pagina nuova quando tornano mesh modificate
   const [showMMXSettings, setShowMMXSettings] = useState(false)
   const dentaxTimerRef = React.useRef(null)
 
@@ -84,6 +89,13 @@ function AppContent() {
   }
   const resetMeshColor = (id) => {
     setLoadedMeshes((list) => list.map((m) => (m.id === id ? { ...m, color: m.originalColor ?? m.color, forceColor: false, originalColor: undefined } : m)))
+  }
+
+  // risultato di una pagina di lavoro (Crea Marker Scan, Utilita' di stampa 3D) aggiunto alla pagina
+  // principale, con il nome scritto in "Applica modifiche"
+  const addResultMesh = (geometry, name) => {
+    const fileName = `${(name || 'mesh').trim() || 'mesh'}.stl`
+    handleFileLoaded({ fileName, geometry, metadata: extractMetadata(geometry, { name: fileName, size: 0 }, 'stl') })
   }
 
   const removeLoadedMesh = (id) => {
@@ -487,12 +499,18 @@ function AppContent() {
                 </div>
               )}
               </div>
+              <button className="workspace-action" onClick={() => setShowPrint3D(true)}>
+                <span className="workspace-action-icon" aria-hidden="true">▤</span>
+                <span>Utilità di stampa 3D</span>
+              </button>
               <button className="workspace-action" onClick={() => setShowMMX(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">◈</span>
+                {/* VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: avvia Meshmixer */}
                 <span>MMX Dental</span>
               </button>
               <button className="workspace-action" onClick={() => setShowSurgery(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">⌖</span>
+                {/* VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: avvia RealGuide */}
                 <span>Chirurgia guidata</span>
               </button>
               <button
@@ -590,7 +608,12 @@ function AppContent() {
         <MarkerScanPage
           key={markerScanKey}
           initialMeshes={markerScanMeshes}
-          onOpenModifier={setModifierMeshes}
+          onApply={(geometry, { name } = {}) => {
+            addResultMesh(geometry, name)
+            setShowMarkerScan(false)
+            setMarkerScanMeshes(null)
+          }}
+          onOpenModifier={(meshes) => setModifierSession({ meshes, origin: 'markerScan' })}
           onClose={() => {
             setShowMarkerScan(false)
             setMarkerScanMeshes(null)
@@ -598,27 +621,58 @@ function AppContent() {
         />
       )}
 
-      {/* Modificatore aperto da Crea Marker Scan: sopra la pagina, che resta com'era sotto.
-          Applica modifiche aggiunge la mesh alla pagina principale (ed eventualmente la salva su
-          file); il pulsante "Crea Marker Scan" riporta le mesh modificate in Crea Marker Scan. */}
-      {modifierMeshes && (
+      {showPrint3D && (
+        <Print3DPage
+          key={print3DKey}
+          initialMeshes={print3DMeshes}
+          onApply={(geometry, { name } = {}) => {
+            addResultMesh(geometry, name)
+            setShowPrint3D(false)
+            setPrint3DMeshes(null)
+          }}
+          onOpenModifier={(meshes) => setModifierSession({ meshes, origin: 'print3d' })}
+          onClose={() => {
+            setShowPrint3D(false)
+            setPrint3DMeshes(null)
+          }}
+        />
+      )}
+
+      {/* Modificatore aperto da un'altra pagina, che resta com'era sotto (Chiudi ci torna senza
+          modifiche).
+          - da Crea Marker Scan: Applica modifiche aggiunge la mesh alla pagina principale (ed
+            eventualmente la salva su file); "Crea Marker Scan" riporta le mesh modificate li';
+          - da Utilita' di stampa 3D: "Torna a Utilita' di stampa 3D" e Applica modifiche riportano
+            le mesh modificate nella pagina di stampa. */}
+      {modifierSession && (
         <div className="fixed inset-0 z-[60]">
           <MeshModifier
             geometry={null}
-            initialMeshes={modifierMeshes}
+            initialMeshes={modifierSession.meshes}
             requireEditConsent={false}
-            onClose={() => setModifierMeshes(null)}
-            onApply={(geometry) => {
-              const fileName = 'Marker Scan modificato.stl'
-              handleFileLoaded({ fileName, geometry, metadata: extractMetadata(geometry, { name: fileName, size: 0 }, 'stl') })
-              setModifierMeshes(null)
-            }}
-            onOpenMarkerScan={(list) => {
-              setMarkerScanMeshes(list)
-              setMarkerScanKey((k) => k + 1)
-              setShowMarkerScan(true)
-              setModifierMeshes(null)
-            }}
+            onClose={() => setModifierSession(null)}
+            {...(modifierSession.origin === 'print3d'
+              ? {
+                  returnLabel: 'Torna a Utilità di stampa 3D',
+                  onReturn: (list) => {
+                    setPrint3DMeshes(list)
+                    setPrint3DKey((k) => k + 1)
+                    setShowPrint3D(true)
+                    setModifierSession(null)
+                  },
+                }
+              : {
+                  onApply: (geometry, { name } = {}) => {
+                    addResultMesh(geometry, name && name !== 'mesh_modificata' ? name : 'Marker Scan modificato')
+                    setModifierSession(null)
+                  },
+                  onOpenMarkerScan: (list) => {
+                    setMarkerScanMeshes(list)
+                    setMarkerScanKey((k) => k + 1)
+                    setShowMarkerScan(true)
+                    setModifierSession(null)
+                  },
+                })}
           />
         </div>
       )}

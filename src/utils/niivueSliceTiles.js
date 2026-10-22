@@ -1,5 +1,5 @@
 // Slice 2D del layout personalizzato di NiiVue (Matching) come riquadri indipendenti:
-// - ogni slice occupa tutto il suo riquadro (sfondo nero e bordo colorato, come in RealGuide);
+// - ogni slice occupa tutto il suo riquadro (sfondo nero e bordo colorato);
 //   la slice intera e' contenuta nel riquadro e centrata;
 // - zoom proprio per ogni riquadro: tasto destro premuto e trascinato in avanti (+) o indietro (-).
 //   Lo zoom tiene fermo il cursore (crosshair), cosi' si ingrandisce il punto che interessa;

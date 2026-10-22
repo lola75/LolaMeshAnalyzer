@@ -8,7 +8,7 @@ import traceback
 import meshlib.mrmeshpy as mr
 import numpy as np
 import uuid
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from local_security import protect_local_server
@@ -1166,7 +1166,7 @@ def isotropic_remesh(mesh: mr.Mesh, target_edge_len: float = 0.0) -> dict:
 
 
 def make_solid(mesh: mr.Mesh, voxel_size: float, offset: float, max_triangles: int) -> dict:
-    """Crea solido (come "Make Solid" di Meshmixer): chiude le aperture della mesh, poi la
+    """Crea solido: chiude le aperture della mesh, poi la
     ricostruisce come volume pieno su una griglia di voxel (superficie chiusa e senza
     auto-intersezioni). offset > 0 ingrandisce il solido, < 0 lo restringe (mm).
     """
@@ -1267,7 +1267,7 @@ def _neighbor_mean(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
 
 def _taubin(verts: np.ndarray, edges: np.ndarray, iterations: int, fixed: np.ndarray | None = None) -> np.ndarray:
     """Lisciatura che conserva la forma (Taubin, lambda / mu): toglie le increspature senza
-    restringere la superficie, come "Leviga - Preserva forma" di Meshmixer."""
+    restringere la superficie (levigatura che preserva la forma)."""
     out = verts.copy()
     for _ in range(iterations):
         for factor in (0.5, -0.53):
@@ -1336,13 +1336,13 @@ def _largest_component(faces: np.ndarray, vertex_count: int) -> np.ndarray:
 
 def make_guide(region: mr.Mesh, up: np.ndarray, offset: float, occlusal: float, perimeter: float,
                edge_length: float = 0.3, smoothing: int = 4, border_smoothing: int = 20, voxel_size: float = 0.3) -> dict:
-    """Guida chirurgica (Crea Marker Scan) costruita sulla superficie, come in Meshmixer:
+    """Guida chirurgica (Crea Marker Scan) costruita sulla superficie:
     1. la regione scelta sul modello senza sottosquadri, estratta come pezzo di superficie
        (parte piu' grande, buchi interni chiusi) e rimagliata in modo regolare;
     2. lisciatura che conserva la forma ("Leviga - Preserva forma") e lisciatura del bordo;
     3. superficie interna = pezzo spostato lungo le normali di `offset` (spazio sui denti), con le
        normali invertite verso il modello;
-    4. superficie esterna come l'offset di Meshmixer: superficie a distanza costante dal pezzo
+    4. superficie esterna: superficie a distanza costante dal pezzo
        (voxel, MeshLib), lato esterno, spessore occlusale dove il pezzo guarda la direzione di
        inserzione e perimetrale sui lati, lisciata insieme al suo bordo;
     5. "Unisci margini": i due bordi cuciti da una fascia.
@@ -1417,7 +1417,7 @@ def make_guide(region: mr.Mesh, up: np.ndarray, offset: float, occlusal: float, 
         normals /= np.linalg.norm(normals, axis=1, keepdims=True) + 1e-12
     inner = verts + normals * offset
 
-    # 4. superficie esterna come l'offset di Meshmixer: superficie a distanza costante dal pezzo
+    # 4. superficie esterna: superficie a distanza costante dal pezzo
     # (voxel, MeshLib), che non puo' ripiegarsi; se ne tiene il lato esterno
     import open3d as o3d
     smooth_patch = mrn.meshFromFacesVerts(faces.astype(np.int32), verts.astype(np.float32))
@@ -1649,6 +1649,122 @@ async def cut_window_endpoint(
         output_path = Path(temp_output.name)
     try:
         mr.saveMesh(cut, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(content=ply_bytes, media_type="application/octet-stream", headers={"X-Mesh-Stats": json.dumps(stats)})
+
+
+def make_shell(solid: mr.Mesh, extended: mr.Mesh, thickness: float) -> dict:
+    """Modello da stampare cavo (Utilita' di stampa 3D, "Guscio"): dal modello pieno `solid` si
+    toglie il modello `extended` (uguale ma con la base piu' in basso) ristretto di `thickness`.
+    La parte tolta attraversa la base: pareti dello spessore scelto e fondo aperto."""
+    if not (0.3 <= thickness <= 20):
+        raise ValueError('Lo spessore del guscio deve essere tra 0,3 e 20 mm.')
+    params = mr.OffsetParameters()
+    params.voxelSize = max(0.08, min(0.3, thickness / 4))
+    params.signDetectionMode = mr.SignDetectionMode.WindingRule
+    inner = mr.offsetMesh(mr.MeshPart(extended), -thickness, params)
+    if inner.topology.numValidFaces() == 0:
+        raise ValueError('Spessore troppo grande per questo modello: il guscio sarebbe pieno.')
+    result = mr.boolean(solid, inner, mr.BooleanOperation.DifferenceAB)
+    if not result.valid():
+        raise ValueError(f'Svuotamento non riuscito: {result.errorString}')
+    shell = result.mesh
+    return {
+        'triangles': int(shell.topology.numValidFaces()),
+        'volumeMm3': float(shell.volume()),
+        'solidVolumeMm3': float(solid.volume()),
+        'openEdges': len(shell.topology.findHoleRepresentiveEdges()),
+        'mesh': shell,
+    }
+
+
+@app.post("/make-shell")
+async def make_shell_endpoint(
+    file: UploadFile = File(...),
+    extended: UploadFile = File(...),
+    thickness: float = Form(2.0),
+):
+    try:
+        solid = load_mesh_from_bytes(await file.read(), file.filename or "modello.stl")
+        longer = load_mesh_from_bytes(await extended.read(), extended.filename or "esteso.stl")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = make_shell(solid, longer, thickness)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore guscio: {exc}")
+    shell = stats.pop('mesh')
+    print(f"[make-shell] {stats}")
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(shell, str(output_path))
+        ply_bytes = output_path.read_bytes()
+    finally:
+        try:
+            output_path.unlink()
+        except Exception:
+            pass
+    return Response(content=ply_bytes, media_type="application/octet-stream", headers={"X-Mesh-Stats": json.dumps(stats)})
+
+
+def union_parts(mesh: mr.Mesh, parts: list) -> dict:
+    """Modello articolato (Utilita' di stampa 3D): i pezzi dei supporti (cubo, cilindro) uniti al
+    modello uno alla volta, in un unico solido da stampare."""
+    before = float(mesh.volume())
+    result_mesh = mesh
+    for i, part in enumerate(parts):
+        if part.volume() < 0:
+            part.topology.flipOrientation()
+        result = mr.boolean(result_mesh, part, mr.BooleanOperation.Union)
+        if not result.valid():
+            raise ValueError(f'Unione del pezzo {i + 1} non riuscita: {result.errorString}')
+        result_mesh = result.mesh
+    return {
+        'triangles': int(result_mesh.topology.numValidFaces()),
+        'parts': len(parts),
+        'volumeMm3': float(result_mesh.volume()),
+        'modelVolumeMm3': before,
+        'openEdges': len(result_mesh.topology.findHoleRepresentiveEdges()),
+        'mesh': result_mesh,
+    }
+
+
+@app.post("/union-parts")
+async def union_parts_endpoint(request: Request):
+    form = await request.form()
+    try:
+        upload = form.get("file")
+        if upload is None:
+            raise ValueError('modello mancante')
+        mesh = load_mesh_from_bytes(await upload.read(), upload.filename or "modello.stl")
+        parts = []
+        for key in sorted((k for k in form.keys() if k.startswith("part")), key=lambda k: int(k[4:] or 0)):
+            item = form.get(key)
+            parts.append(load_mesh_from_bytes(await item.read(), item.filename or f"{key}.stl"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        stats = union_parts(mesh, parts)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Errore unione supporti: {exc}")
+    merged = stats.pop('mesh')
+    print(f"[union-parts] {stats}")
+    with NamedTemporaryFile(suffix=".ply", delete=False) as temp_output:
+        output_path = Path(temp_output.name)
+    try:
+        mr.saveMesh(merged, str(output_path))
         ply_bytes = output_path.read_bytes()
     finally:
         try:

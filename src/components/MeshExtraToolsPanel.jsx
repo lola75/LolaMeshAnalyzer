@@ -1,6 +1,6 @@
 import React from 'react'
 
-// Pannelli degli strumenti in stile Meshmixer del Modificatore mesh:
+// Pannelli degli strumenti aggiuntivi del Modificatore mesh:
 // Leviga bordo (Smooth Boundary), Crea solido (Make Solid), Ponte (Bridge).
 
 export const EXTRA_TOOLS = {
