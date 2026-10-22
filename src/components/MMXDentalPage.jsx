@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 
-// VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: pagina che avvia Meshmixer (programma esterno) dal percorso nelle Impostazioni MMX.
 export default function MMXDentalPage({ onClose }) {
   const [isLaunching, setIsLaunching] = useState(false)
   const [launchMessage, setLaunchMessage] = useState('')

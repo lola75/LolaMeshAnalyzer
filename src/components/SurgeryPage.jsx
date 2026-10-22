@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 
-// VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: pagina che avvia RealGuide (programma esterno) dal percorso nelle Impostazioni MMX.
 export default function SurgeryPage({ onClose }) {
   const [isLaunching, setIsLaunching] = useState(false)
   const [launchMessage, setLaunchMessage] = useState('')

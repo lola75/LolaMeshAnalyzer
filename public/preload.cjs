@@ -14,7 +14,6 @@ contextBridge.exposeInMainWorld('electron', {
   openExternal: async ({ url }) => {
     return await ipcRenderer.invoke('open-external', { url })
   },
-  // VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: avvio di Meshmixer e RealGuide (programmi esterni)
   launchMeshmixer: async (customPath) => {
     return await ipcRenderer.invoke('launch-meshmixer', customPath)
   },

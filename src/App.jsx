@@ -505,12 +505,10 @@ function AppContent() {
               </button>
               <button className="workspace-action" onClick={() => setShowMMX(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">◈</span>
-                {/* VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: avvia Meshmixer */}
                 <span>MMX Dental</span>
               </button>
               <button className="workspace-action" onClick={() => setShowSurgery(true)}>
                 <span className="workspace-action-icon" aria-hidden="true">⌖</span>
-                {/* VERIFICARE LA NOTA SUI MARCHI PRIMA DEL RILASCIO: avvia RealGuide */}
                 <span>Chirurgia guidata</span>
               </button>
               <button
